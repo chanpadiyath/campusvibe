@@ -262,7 +262,7 @@ body[data-screen="lobby"] { background: var(--bg); }
 .enf-online i { width: 6px; height: 6px; border-radius: 50%; background: #e8e1d3; animation: pulse 2s infinite; }
 
 /* The walk */
-.enf-walk { height: 820vh; position: relative; }
+.enf-walk { height: 420vh; position: relative; }   /* scroll length for three doorways */
 .enf-stage {
     position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden;
     background: radial-gradient(ellipse at 50% 55%, var(--room), var(--bg-deep) 70%);

@@ -192,7 +192,7 @@ window.Lobby = (() => {
     });
 
     document.getElementById('enfWalkBtn').addEventListener('click', () => {
-        scrollTo({ top: walk.offsetTop + (walk.offsetHeight - innerHeight) / 7, behavior: 'smooth' });
+        scrollTo({ top: walk.offsetTop + (walk.offsetHeight - innerHeight) / rooms.length, behavior: 'smooth' });
     });
     document.getElementById('enfSkipBtn').addEventListener('click', () => {
         document.getElementById('enfDoor').scrollIntoView({ behavior: 'smooth' });
