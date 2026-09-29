@@ -94,7 +94,17 @@ function setChatEnabled(on) {
     if (status === 403) return showBanned(data.until);
     await setupLogin();
     show('login');
+    // Logged out because this email signed in on too many devices
+    if (data?.reason === 'device_limit' || new URLSearchParams(location.search).get('signedout') === 'device') {
+        $('loginError').textContent = 'You were logged out here because this email logged in on 2 other devices. Log in again to use it here.';
+        history.replaceState(null, '', '/');
+    }
 })();
+
+// Another device took this login's place: reload into the login screen with an explanation
+function loggedOutByDeviceLimit() {
+    location.href = '/?signedout=device';
+}
 
 // ---------- Login ----------
 let pendingEmail = '';
@@ -289,6 +299,7 @@ $('goBtn').addEventListener('click', async () => {
             renderMode();
             toast("Couldn't get your camera 📷 so we switched to text mode");
         }
+        if (ok) startNudityFilter();
         if (!iceServers) {
             const { ok: iceOk, data } = await api('/api/ice');
             iceServers = iceOk ? data.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -329,17 +340,21 @@ function connectSocket() {
     socket = io();
 
     socket.on('connect_error', (err) => {
-        if (err.message === 'unauthorized') { socket.disconnect(); socket = null; show('login'); }
+        if (err.message === 'unauthorized') { socket.disconnect(); socket = null; location.reload(); }
+        if (err.message === 'device_limit') loggedOutByDeviceLimit();
         if (err.message === 'banned') showBanned();
     });
+    socket.on('logged_out', () => loggedOutByDeviceLimit());
 
     socket.on('online', (n) => document.querySelectorAll('.online-count').forEach(el => (el.textContent = n)));
 
     socket.on('matched', ({ initiator, shared }) => {
         clearTimeout(researchTimer);
         isMatched = true;
+        window.NsfwGuard?.newMatch();
+        clearNudityCover();
         $('messages').replaceChildren();
-        addSys('You matched with a random SRM student! Be kind, and never share your number, address or passwords.');
+        addSys('You matched with someone who has a verified SRM email. Be kind, and never share your number, address or passwords.');
         if (shared.length) addSys(`You both like: ${shared.map(s => `${EMOJI[s] || '✨'} ${s}`).join(', ')}`, true);
         addSys(OPENERS[Math.floor(Math.random() * OPENERS.length)], true);
         setChatEnabled(true);
@@ -372,6 +387,18 @@ function connectSocket() {
     });
 
     socket.on('banned', ({ until } = {}) => showBanned(until));
+
+    // Red mark: many different people reported this account
+    socket.on('warning', ({ reporters, reasons } = {}) => {
+        const labels = { nudity: 'nudity or sexual content', harassment: 'harassment or hate', underage: 'looking under 18', spam: 'spam or ads', other: 'something else' };
+        $('warningText').textContent = `${reporters} different people have reported your account in the last 30 days, for:`;
+        $('warningReasons').replaceChildren(...Object.entries(reasons || {}).map(([r, n]) => {
+            const li = document.createElement('li');
+            li.textContent = `${labels[r] || r} (${n})`;
+            return li;
+        }));
+        if (!$('warningDialog').open) $('warningDialog').showModal();
+    });
 
     socket.on('disconnect', (reason) => {
         if (reason === 'io server disconnect') return;
@@ -410,6 +437,7 @@ function goHome() {
     isMatched = false;
     endPeer();
     stopCamera();
+    window.NsfwGuard?.stop();
     show('lobby', { atDoor: true });
 }
 
@@ -445,7 +473,48 @@ function endPeer() {
     if (peer) { peer.destroy(); peer = null; }
     $('remoteVideo').srcObject = null;
     $('remotePlaceholder').hidden = false;
+    clearNudityCover();
 }
+
+// ---------- Nudity filter (runs on this device only) ----------
+function startNudityFilter() {
+    window.NsfwGuard?.start({
+        remoteVideo: () => $('remoteVideo'),
+        localVideo: () => $('localVideo'),
+        // Their video looked like nudity: hide it for the rest of this chat
+        onRemoteBlocked: () => {
+            if (!isMatched) return;
+            $('remoteWrap').classList.add('nsfw-blocked');
+            $('nsfwCover').hidden = false;
+            addSys('Their video was hidden because it may contain nudity. You can report them or hit Next.');
+        },
+        // My own camera looked like nudity: switch it off before anything more is sent
+        onLocalBlocked: () => {
+            const track = localStream?.getVideoTracks()[0];
+            if (!track || !track.enabled) return;
+            track.enabled = false;
+            $('camBtn').classList.add('off');
+            $('camBtn').textContent = 'CAM OFF';
+            toast('Your camera was turned off because it may be showing nudity');
+            addSys('Your camera was turned off because it may be showing nudity. Turn it back on with CAM when you are ready.');
+        },
+    });
+}
+
+function clearNudityCover() {
+    $('remoteWrap').classList.remove('nsfw-blocked');
+    $('nsfwCover').hidden = true;
+}
+
+$('nsfwNext').addEventListener('click', () => nextPerson());
+$('nsfwReport').addEventListener('click', () => {
+    if (!isMatched) return;
+    socket.emit('report', { reason: 'nudity', note: 'Video hidden by the nudity filter' });
+    isMatched = false;
+    toast('Reported. Thanks for keeping it safe 🙏');
+    $('messages').replaceChildren();
+    startSearch();
+});
 
 // ---------- Chat input ----------
 $('msgForm').addEventListener('submit', (e) => {
@@ -498,15 +567,24 @@ document.addEventListener('keydown', (e) => {
 $('reportBtn').addEventListener('click', () => $('reportDialog').showModal());
 $('cancelReport').addEventListener('click', () => $('reportDialog').close());
 
+$('reportBtn').addEventListener('click', () => { $('reportNote').value = ''; });
+
 document.querySelectorAll('.report-reasons button').forEach(b => b.addEventListener('click', () => {
     $('reportDialog').close();
     if (!isMatched) return;
-    socket.emit('report', { reason: b.dataset.reason });
+    socket.emit('report', { reason: b.dataset.reason, note: $('reportNote').value.trim().slice(0, 200) });
     isMatched = false;
     toast('Reported. Thanks for keeping it chill 🙏');
     $('messages').replaceChildren();
     startSearch();
 }));
+
+$('warningOk').addEventListener('click', () => {
+    socket?.emit('ack_warning');
+    $('warningDialog').close();
+});
+// The warning can only be closed with "I understand"
+$('warningDialog').addEventListener('cancel', (e) => e.preventDefault());
 
 // ---------- Banned ----------
 function showBanned(until) {

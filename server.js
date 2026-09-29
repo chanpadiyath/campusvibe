@@ -13,7 +13,7 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'srmist.edu.in')
     .split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
 const SESSION_SECRET = process.env.SESSION_SECRET || (IS_PROD ? '' : 'dev-only-secret');
-const SESSION_DAYS = 30;
+const SESSION_DAYS = 365;          // renewed on every visit, so people stay logged in until they log out
 const CODE_TTL_MS = 10 * 60 * 1000;
 const REPORTS_TO_BAN = Number(process.env.REPORTS_TO_BAN) || 3;
 const BAN_HOURS = Number(process.env.BAN_HOURS) || 24;
@@ -62,6 +62,10 @@ app.use((req, res, next) => {
 });
 // Pages can be linked without .html (e.g. /privacy once legal pages are added)
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+// Nudity filter libraries, served from our own server (runs entirely in the browser; video never leaves the device for this)
+app.get('/vendor/nsfwjs.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/browser/nsfwjs.min.js'), { maxAge: '30d' }));
+app.get('/vendor/nsfw-model/model.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/models/mobilenet_v2/model.min.js'), { maxAge: '30d' }));
+app.get('/vendor/nsfw-model/weights.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/models/mobilenet_v2/group1-shard1of1.min.js'), { maxAge: '30d' }));
 
 // ---------- MODERATION STORE (bans + reports, saved to disk) ----------
 const DB_FILE = path.join(DATA_DIR, 'moderation.json');
@@ -94,10 +98,24 @@ function pruneDb() {
     for (const [email, ban] of Object.entries(db.bans)) {
         if (ban.until !== null && ban.until <= now) { delete db.bans[email]; changed = true; }
     }
+    for (const email of Object.keys(db.marks || {})) {
+        if (!db.reports[email]) { delete db.marks[email]; changed = true; }
+    }
     if (changed) saveDb();
 }
+if (!db.marks) db.marks = {};
 pruneDb();
 setInterval(pruneDb, 3600e3).unref();
+
+// Red mark: more than RED_MARK_AT different people reported the same account in the last 30 days.
+// They get a one-time warning, and the account is highlighted in the admin dashboard.
+const RED_MARK_AT = Number(process.env.RED_MARK_AT) || 5;
+if (!db.marks) db.marks = {};                      // email -> { at, count, acknowledged }
+const distinctReporters30d = (email) => new Set((db.reports[email] || []).map(r => r.by)).size;
+
+// Admins (you) can open /admin. Comma-separated emails, e.g. ADMIN_EMAILS=you@srmist.edu.in
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+const isAdmin = (email) => ADMIN_EMAILS.includes(String(email || '').toLowerCase());
 
 // A ban with until: null is permanent (set it by hand in data/moderation.json).
 function isBanned(email) {
@@ -110,11 +128,13 @@ function sign(payload) {
     return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
 }
 
-function createSession(email) {
-    const payload = Buffer.from(JSON.stringify({ e: email, x: Date.now() + SESSION_DAYS * 864e5 })).toString('base64url');
+// Each login is one "device" (a browser on a phone or laptop) with its own random id inside the cookie.
+function createSession(email, device = crypto.randomBytes(12).toString('base64url')) {
+    const payload = Buffer.from(JSON.stringify({ e: email, d: device, x: Date.now() + SESSION_DAYS * 864e5 })).toString('base64url');
     return `${payload}.${sign(payload)}`;
 }
 
+// Returns { email, device } for a valid, unexpired cookie
 function readSession(token) {
     if (typeof token !== 'string') return null;
     const [payload, sig] = token.split('.');
@@ -122,9 +142,44 @@ function readSession(token) {
     const a = Buffer.from(sig), b = Buffer.from(sign(payload));
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
     try {
-        const { e, x } = JSON.parse(Buffer.from(payload, 'base64url').toString());
-        return Date.now() < x ? e : null;
+        const { e, d, x } = JSON.parse(Buffer.from(payload, 'base64url').toString());
+        if (!(Date.now() < x)) return null;
+        return { email: e, device: d || `legacy-${sig.slice(0, 16)}` };   // cookies from before device ids existed
     } catch { return null; }
+}
+
+// ---------- DEVICE LIMIT: one email can be logged in on at most MAX_DEVICES devices ----------
+// Logging in on one more device logs out the device that was used least recently.
+// This lives in memory; after a restart devices simply re-register as they come back.
+const MAX_DEVICES = Number(process.env.MAX_DEVICES) || 2;
+const devices = new Map();      // email -> [{ id, lastSeen }]
+const loggedOut = new Set();    // device ids pushed out by the limit (or logged out), so they can't sneak back in
+
+function useDevice(email, device) {
+    if (loggedOut.has(device)) return false;
+    const list = devices.get(email) || [];
+    const known = list.find(d => d.id === device);
+    if (known) { known.lastSeen = Date.now(); return true; }
+    list.push({ id: device, lastSeen: Date.now() });
+    list.sort((x, y) => x.lastSeen - y.lastSeen);
+    while (list.length > MAX_DEVICES) {
+        const oldest = list.shift();
+        loggedOut.add(oldest.id);
+        for (const s of io.of('/').sockets.values()) {
+            if (s.data.device === oldest.id) {
+                s.emit('logged_out', { reason: 'device_limit' });
+                s.disconnect(true);
+            }
+        }
+    }
+    devices.set(email, list);
+    return true;
+}
+
+function forgetDevice(email, device) {
+    const list = (devices.get(email) || []).filter(d => d.id !== device);
+    if (list.length) devices.set(email, list); else devices.delete(email);
+    loggedOut.add(device);
 }
 
 function parseCookies(header = '') {
@@ -140,11 +195,20 @@ function sessionCookie(value, maxAgeSec) {
 }
 
 function requireAuth(req, res, next) {
-    const email = readSession(parseCookies(req.headers.cookie).sid);
-    if (!email) return res.status(401).json({ error: 'Not logged in' });
-    if (isBanned(email)) return res.status(403).json({ error: 'banned', until: db.bans[email].until });
-    req.email = email;
+    const session = readSession(parseCookies(req.headers.cookie).sid);
+    if (!session) return res.status(401).json({ error: 'Not logged in' });
+    if (!useDevice(session.email, session.device)) return res.status(401).json({ error: 'Not logged in', reason: 'device_limit' });
+    if (isBanned(session.email)) return res.status(403).json({ error: 'banned', until: db.bans[session.email].until });
+    req.email = session.email;
+    req.device = session.device;
     next();
+}
+
+// Log in on this browser as a new device (may log out the least recently used one)
+function startSession(res, email) {
+    const device = crypto.randomBytes(12).toString('base64url');
+    useDevice(email, device);
+    res.set('Set-Cookie', sessionCookie(createSession(email, device), SESSION_DAYS * 86400));
 }
 
 // ---------- RATE LIMITING ----------
@@ -272,11 +336,78 @@ app.post('/api/verify-code', (req, res) => {
     if (!crypto.timingSafeEqual(a, b)) return res.status(400).json({ error: 'Wrong code, try again.' });
 
     pendingCodes.delete(email);
-    res.set('Set-Cookie', sessionCookie(createSession(email), SESSION_DAYS * 86400));
+    startSession(res, email);
     res.json({ email });
 });
 
-app.get('/api/me', requireAuth, (req, res) => res.json({ email: req.email }));
+app.get('/api/me', requireAuth, (req, res) => {
+    // Sliding login: every visit pushes the expiry out again
+    res.set('Set-Cookie', sessionCookie(createSession(req.email, req.device), SESSION_DAYS * 86400));
+    res.json({ email: req.email, admin: isAdmin(req.email) });
+});
+
+// ---------- ADMIN (developer dashboard at /admin) ----------
+function requireAdmin(req, res, next) {
+    requireAuth(req, res, () => {
+        if (!isAdmin(req.email)) return res.status(403).json({ error: 'Not an admin' });
+        next();
+    });
+}
+
+app.get('/api/admin/reports', requireAdmin, (req, res) => {
+    const now = Date.now();
+    const accounts = Object.entries(db.reports).map(([email, list]) => {
+        const reasons = {};
+        for (const r of list) reasons[r.reason] = (reasons[r.reason] || 0) + 1;
+        const ban = db.bans[email];
+        return {
+            email,
+            reports: list.length,
+            reporters: new Set(list.map(r => r.by)).size,
+            reporters7d: new Set(list.filter(r => now - r.at < 7 * 864e5).map(r => r.by)).size,
+            reasons,
+            notes: list.filter(r => r.note).map(r => ({ note: r.note, reason: r.reason, at: r.at })).slice(-20).reverse(),
+            lastAt: Math.max(...list.map(r => r.at)),
+            redMark: !!db.marks[email],
+            warned: db.marks[email]?.acknowledged ? 'acknowledged' : db.marks[email] ? 'pending' : null,
+            banned: isBanned(email) ? { until: ban.until, reason: ban.reason } : null,
+        };
+    }).sort((a, b) => (b.redMark - a.redMark) || (b.reporters - a.reporters) || (b.lastAt - a.lastAt));
+    // Banned accounts without current reports (e.g. manual bans) are listed too
+    for (const [email, ban] of Object.entries(db.bans)) {
+        if (!db.reports[email] && isBanned(email)) accounts.push({ email, reports: 0, reporters: 0, reporters7d: 0, reasons: {}, notes: [], lastAt: ban.at, redMark: false, warned: null, banned: { until: ban.until, reason: ban.reason } });
+    }
+    res.json({ redMarkAt: RED_MARK_AT, banAt: REPORTS_TO_BAN, banHours: BAN_HOURS, online: io.of('/').sockets.size, accounts });
+});
+
+app.post('/api/admin/ban', requireAdmin, (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    if (!email) return res.status(400).json({ error: 'Bad email' });
+    const hours = req.body?.hours === null ? null : Number(req.body?.hours);
+    if (hours !== null && !(hours > 0)) return res.status(400).json({ error: 'Bad duration' });
+    db.bans[email] = { until: hours === null ? null : Date.now() + hours * 3600e3, reason: 'admin', at: Date.now() };
+    kickEmail(email);
+    saveDb();
+    res.json({ ok: true });
+});
+
+app.post('/api/admin/unban', requireAdmin, (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    if (!email) return res.status(400).json({ error: 'Bad email' });
+    delete db.bans[email];
+    saveDb();
+    res.json({ ok: true });
+});
+
+// Clear an account's reports and red mark (e.g. after reviewing false reports)
+app.post('/api/admin/clear', requireAdmin, (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    if (!email) return res.status(400).json({ error: 'Bad email' });
+    delete db.reports[email];
+    delete db.marks[email];
+    saveDb();
+    res.json({ ok: true });
+});
 
 // ---------- GOOGLE SIGN-IN (SRM's email runs on Google Workspace) ----------
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -336,11 +467,13 @@ app.post('/api/google', async (req, res) => {
     }
     if (isBanned(email)) return res.status(403).json({ error: 'banned', until: db.bans[email].until });
 
-    res.set('Set-Cookie', sessionCookie(createSession(email), SESSION_DAYS * 86400));
+    startSession(res, email);
     res.json({ email });
 });
 
 app.post('/api/logout', (req, res) => {
+    const session = readSession(parseCookies(req.headers.cookie).sid);
+    if (session) forgetDevice(session.email, session.device);
     res.set('Set-Cookie', sessionCookie('', 0));
     res.json({ ok: true });
 });
@@ -397,15 +530,29 @@ function kickEmail(email) {
 }
 
 io.use((socket, next) => {
-    const email = readSession(parseCookies(socket.handshake.headers.cookie).sid);
-    if (!email) return next(new Error('unauthorized'));
-    if (isBanned(email)) return next(new Error('banned'));
-    socket.data.email = email;
+    const session = readSession(parseCookies(socket.handshake.headers.cookie).sid);
+    if (!session) return next(new Error('unauthorized'));
+    if (!useDevice(session.email, session.device)) return next(new Error('device_limit'));
+    if (isBanned(session.email)) return next(new Error('banned'));
+    socket.data.email = session.email;
+    socket.data.device = session.device;
     next();
 });
 
+// Tell every open tab of this account about their red mark
+function warningPayload(email) {
+    const counts = {};
+    for (const r of db.reports[email] || []) counts[r.reason] = (counts[r.reason] || 0) + 1;
+    return { reporters: distinctReporters30d(email), reasons: counts };
+}
+function sendWarning(email) {
+    for (const s of io.of('/').sockets.values()) if (s.data.email === email) s.emit('warning', warningPayload(email));
+}
+
 io.on('connection', (socket) => {
     socket.emit('online', io.of('/').sockets.size);
+    const mark = db.marks[socket.data.email];
+    if (mark && !mark.acknowledged) socket.emit('warning', warningPayload(socket.data.email));
 
     // 1. Join / Matchmaking
     socket.on('join', (opts = {}) => {
@@ -485,22 +632,42 @@ io.on('connection', (socket) => {
         if (!reported) return;
         if (rateLimited(`report:${socket.data.email}`, 5, 3600e3)) return;
 
-        // Only fixed reasons are stored, so no free text (or personal details) ends up in the file
         const REASONS = ['nudity', 'harassment', 'underage', 'spam', 'other'];
         const reason = REASONS.includes(data?.reason) ? data.reason : 'other';
-        const weekAgo = Date.now() - 7 * 864e5;
-        const list = (db.reports[reported] || []).filter(r => r.at > weekAgo);
-        list.push({ by: reporterId(socket.data.email), reason, at: Date.now() });
+        // Optional short note from the reporter, only visible to admins, deleted with the report after 30 days
+        const note = String(data?.note || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200);
+        const list = db.reports[reported] || [];
+        list.push({ by: reporterId(socket.data.email), reason, ...(note && { note }), at: Date.now() });
         db.reports[reported] = list;
-        console.log(`🚩 Report received (${reason}); ${list.length} report(s) on this account in 7 days`);
 
-        const distinctReporters = new Set(list.map(r => r.by)).size;
-        if (distinctReporters >= REPORTS_TO_BAN && !isBanned(reported)) {
+        // Short-term: several different reporters within 7 days → automatic temporary ban
+        const weekAgo = Date.now() - 7 * 864e5;
+        const recentReporters = new Set(list.filter(r => r.at > weekAgo).map(r => r.by)).size;
+        const reporters30d = distinctReporters30d(reported);
+        console.log(`🚩 Report received (${reason}); ${reporters30d} different reporter(s) on this account in 30 days`);
+
+        // Long-term: more than RED_MARK_AT different reporters within 30 days → red mark + warning
+        if (reporters30d > RED_MARK_AT && !db.marks[reported]) {
+            db.marks[reported] = { at: Date.now(), count: reporters30d, acknowledged: false };
+            console.log('🟥 An account got a red mark');
+        } else if (db.marks[reported]) {
+            db.marks[reported].count = reporters30d;
+        }
+
+        if (recentReporters >= REPORTS_TO_BAN && !isBanned(reported)) {
             db.bans[reported] = { until: Date.now() + BAN_HOURS * 3600e3, reason: 'auto: multiple reports', at: Date.now() };
             console.log(`⛔ An account was auto-banned for ${BAN_HOURS}h`);
             kickEmail(reported);
+        } else if (db.marks[reported] && !db.marks[reported].acknowledged) {
+            sendWarning(reported);
         }
         saveDb();
+    });
+
+    // The reported person tapped "I understand" on their warning
+    socket.on('ack_warning', () => {
+        const mark = db.marks[socket.data.email];
+        if (mark && !mark.acknowledged) { mark.acknowledged = true; mark.acknowledgedAt = Date.now(); saveDb(); }
     });
 
     // 6. Disconnect

@@ -181,7 +181,7 @@
 
         <div class="chat-layout">
             <div class="video-area" id="videoArea">
-                <div class="remote-wrap">
+                <div class="remote-wrap" id="remoteWrap">
                     <video id="remoteVideo" autoplay playsinline></video>
                     <div id="remotePlaceholder" class="placeholder">
                         <svg class="rc-arch" viewBox="0 0 100 140" aria-hidden="true">
@@ -191,6 +191,14 @@
                         <p>Finding someone from campus…</p>
                     </div>
                     <div class="tag">STRANGER</div>
+                    <!-- Shown when the nudity filter hides the stranger's video -->
+                    <div id="nsfwCover" class="nsfw-cover" hidden>
+                        <p><b>Video hidden</b><br>It may contain nudity.</p>
+                        <div class="nsfw-actions">
+                            <button id="nsfwReport" class="ctrl report">REPORT</button>
+                            <button id="nsfwNext" class="ctrl next">NEXT <span>→</span></button>
+                        </div>
+                    </div>
                 </div>
                 <div class="local-wrap">
                     <video id="localVideo" autoplay muted playsinline></video>
@@ -228,7 +236,7 @@
     <!-- REPORT MODAL -->
     <dialog id="reportDialog" class="card">
         <h2>Report this person 🚩</h2>
-        <p class="hint">They'll be skipped right away. Enough reports = ban.</p>
+        <p class="hint">Pick a reason. They'll be skipped right away.</p>
         <div class="report-reasons">
             <button data-reason="nudity">🔞 Nudity / sexual stuff</button>
             <button data-reason="harassment">😡 Harassment / hate</button>
@@ -236,7 +244,18 @@
             <button data-reason="spam">📢 Spam / ads</button>
             <button data-reason="other">🤷 Something else</button>
         </div>
+        <label for="reportNote" class="report-note-label">Anything else? <small>(optional, only the moderator sees this)</small></label>
+        <textarea id="reportNote" class="report-note" maxlength="200" rows="2" placeholder="What happened?"></textarea>
         <button id="cancelReport" class="link-btn">Cancel</button>
+    </dialog>
+
+    <!-- Warning for accounts that many people have reported -->
+    <dialog id="warningDialog" class="card warning-dialog" aria-labelledby="warningTitle">
+        <h2 id="warningTitle">⚠️ Warning</h2>
+        <p id="warningText">Several people have reported your account.</p>
+        <ul id="warningReasons"></ul>
+        <p>Please follow the house rules. If people keep reporting you, your account will be banned.</p>
+        <button id="warningOk" class="warning-ok">I understand</button>
     </dialog>
 
     <div id="toast" class="toast" role="status"></div>
@@ -258,6 +277,7 @@
     <script src="/entry.js"></script>
     <script src="/lobby.js"></script>
     <script src="/chatbg.js"></script>
+    <script src="/nsfw.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>Moderation · CampusVibe</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Bodoni+Moda:opsz,wght@6..96,400&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/legal.css">
+    <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+<main class="admin">
+    <a class="back" href="/">← BACK TO CAMPUSVIBE</a>
+    <h1>Moderation</h1>
+    <p class="meta" id="summary">Loading…</p>
+
+    <p class="notice" id="rules"></p>
+
+    <div class="filters" role="group" aria-label="Filter accounts">
+        <button class="filter active" data-filter="all">All reported</button>
+        <button class="filter" data-filter="red">Red marks</button>
+        <button class="filter" data-filter="banned">Banned</button>
+        <button id="refresh" class="filter">↻ Refresh</button>
+    </div>
+
+    <p id="error" class="error" role="alert"></p>
+    <div id="list" class="accounts" aria-live="polite"></div>
+</main>
+<script src="/admin.js"></script>
+</body>
+</html>

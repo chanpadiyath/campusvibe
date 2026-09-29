@@ -1,0 +1,41 @@
+.admin { max-width: 960px; }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; }
+.filter {
+    padding: 8px 14px; cursor: pointer; background: transparent; color: var(--muted);
+    border: 1px solid var(--line); font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+}
+.filter.active, .filter:hover { color: var(--fg); border-color: var(--fg); }
+.filter:focus-visible, .act:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+
+.error { color: #ff8a8a; min-height: 1.2em; }
+
+.accounts { display: flex; flex-direction: column; gap: 14px; }
+.empty { color: var(--muted); font-style: italic; }
+
+.account { border: 1px solid var(--line); padding: 18px 20px; }
+.account.red { border-color: #e5484d; box-shadow: inset 4px 0 0 #e5484d; }
+.account-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; justify-content: space-between; }
+.account-email { font-family: 'IBM Plex Mono', monospace; font-size: 14px; word-break: break-all; }
+
+.badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge { padding: 3px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; border: 1px solid var(--line); color: var(--muted); }
+.badge.red { background: #e5484d; border-color: #e5484d; color: #fff; }
+.badge.ban { border-color: #e5a84d; color: #e5a84d; }
+
+.stats { margin: 12px 0 6px; color: var(--muted); font-size: 0.9rem; }
+.reasons { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.reason { padding: 3px 9px; background: rgba(232, 225, 211, 0.08); font-size: 0.85rem; }
+
+.notes { margin: 10px 0 0; padding: 0; list-style: none; }
+.notes li { padding: 8px 0; border-top: 1px dashed var(--line); font-size: 0.92rem; }
+.notes .when { color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 11px; margin-right: 8px; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.act {
+    padding: 7px 12px; cursor: pointer; background: transparent; color: var(--fg); border: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.act:hover { border-color: var(--fg); }
+.act.danger { color: #ff8a8a; border-color: rgba(229, 72, 77, 0.5); }
+.act.danger:hover { background: rgba(229, 72, 77, 0.12); }

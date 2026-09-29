@@ -571,3 +571,33 @@ body[data-screen="lobby"] .toast {
     border-radius: 0; background: #e8e1d3; color: #0a0908; border: none;
     font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; padding: 12px 18px;
 }
+
+/* Report note + red-mark warning */
+.report-note-label { display: block; margin-top: 4px; font-size: 0.9rem; }
+.report-note-label small { opacity: 0.7; }
+.report-note {
+    width: 100%; margin: 8px 0 12px; padding: 10px 12px; resize: vertical; font: inherit; font-size: 0.95rem;
+    border: 1px solid rgba(var(--c-rgb, 27, 27, 58), 0.3); background: transparent; color: inherit; border-radius: 0;
+}
+.warning-dialog { max-width: 420px; }
+.warning-dialog h2 { color: #e5484d; }
+.warning-dialog ul { margin: 0 0 12px; padding-left: 20px; }
+.warning-ok {
+    width: 100%; padding: 12px; margin-top: 8px; cursor: pointer; border: none;
+    background: #e5484d; color: #fff; font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.15em; text-transform: uppercase;
+}
+body[data-screen="lobby"] .warning-dialog, body[data-screen="lobby"] .warning-dialog h2 { font-family: 'Bodoni Moda', serif; }
+body[data-screen="lobby"] dialog.card { background: #13110f; color: #e8e1d3; border: 1px solid rgba(232, 225, 211, 0.25); border-radius: 0; }
+
+/* Nudity filter: blur the stranger's video and cover it */
+.remote-wrap.nsfw-blocked #remoteVideo { filter: blur(48px) brightness(0.5); transform: scale(1.15); }
+.nsfw-cover {
+    position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    padding: 20px; text-align: center; color: #e8e1d3; background: rgba(7, 6, 5, 0.85);
+    font-family: 'Bodoni Moda', serif; font-size: 1.2rem;
+}
+.nsfw-cover[hidden] { display: none; }
+.nsfw-cover b { font-size: 1.6rem; font-weight: 400; font-style: italic; }
+.nsfw-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.nsfw-cover .ctrl { color: #e8e1d3; border-color: rgba(232, 225, 211, 0.5); }
+.nsfw-cover .ctrl.next { background: #e8e1d3; color: #0b0a09; }
