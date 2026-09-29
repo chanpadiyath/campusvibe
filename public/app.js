@@ -11,6 +11,7 @@ let interests = [];
 let localStream = null;
 let peer = null;
 let iceServers = null;
+let relayOnly = false;       // true when the server has a TURN relay: video never goes direct, so IPs stay hidden
 let isMatched = false;
 let videoTimer = null;
 let researchTimer = null;
@@ -91,15 +92,90 @@ function setChatEnabled(on) {
     const { ok, status, data } = await api('/api/me');
     if (ok) return enterLobby(data.email);
     if (status === 403) return showBanned(data.until);
+    await setupLogin();
     show('login');
 })();
 
 // ---------- Login ----------
 let pendingEmail = '';
+let loginConfig = { googleClientId: null, codeLogin: true, domain: 'srmist.edu.in' };
+
+function showLoginStep(step) {           // 'google' | 'email' | 'code'
+    $('googleArea').hidden = step !== 'google';
+    $('emailForm').hidden = step !== 'email';
+    $('codeForm').hidden = step !== 'code';
+    $('loginError').textContent = '';
+}
+
+// Both boxes (18+ / rules, and Terms + Privacy) must be ticked before any login
+function needsAgreement() {
+    const missing = [$('agreeInput'), $('termsInput')].filter(box => !box.checked);
+    if (!missing.length) return false;
+    $('loginError').textContent = missing.length === 2
+        ? 'Tick both boxes first ☝️'
+        : missing[0] === $('agreeInput') ? 'Tick the 18+ box first ☝️' : 'Please accept the Terms & Privacy Policy first ☝️';
+    missing[0].focus();
+    return true;
+}
+
+// Offer Google sign-in when it's set up, with the email code as a backup
+async function setupLogin() {
+    const { ok, data } = await api('/api/config');
+    if (ok) loginConfig = data;
+    $('useCodeBtn').hidden = !loginConfig.codeLogin;
+    $('useGoogleBtn').hidden = !loginConfig.googleClientId;
+
+    if (!loginConfig.googleClientId) return showLoginStep('email');
+    showLoginStep('google');
+    try {
+        await loadScript('https://accounts.google.com/gsi/client');
+        google.accounts.id.initialize({
+            client_id: loginConfig.googleClientId,
+            callback: onGoogleCredential,
+            hd: loginConfig.domain,            // only a hint for Google's account picker; the server enforces it
+            ux_mode: 'popup',
+            auto_select: false,
+        });
+        google.accounts.id.renderButton($('googleBtn'), {
+            type: 'standard', theme: 'outline', size: 'large', shape: 'pill', text: 'continue_with', logo_alignment: 'left',
+            width: Math.min(400, Math.max(220, $('googleArea').clientWidth || 320)),
+        });
+    } catch (err) {
+        console.warn(err);
+        if (loginConfig.codeLogin) showLoginStep('email');
+        $('loginError').textContent = "Couldn't load Google sign-in." + (loginConfig.codeLogin ? ' Use an email code instead.' : ' Refresh and try again.');
+    }
+}
+
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error(`Failed to load ${src}`));
+        document.head.appendChild(s);
+    });
+}
+
+async function onGoogleCredential(response) {
+    if (needsAgreement()) return;
+    $('loginError').textContent = '';
+    const { ok, status, data } = await api('/api/google', { credential: response.credential, agree: true });
+    if (!ok) {
+        if (status === 403 && data.error === 'banned') return showBanned(data.until);
+        return ($('loginError').textContent = data.error || 'Google sign-in failed. Try again.');
+    }
+    window.Entry.play(() => enterLobby(data.email));
+}
+
+$('useCodeBtn').addEventListener('click', () => { showLoginStep('email'); $('emailInput').focus(); });
+$('useGoogleBtn').addEventListener('click', () => showLoginStep('google'));
 
 $('emailForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('loginError').textContent = '';
+    if (needsAgreement()) return;
     const btn = e.submitter;
     btn.disabled = true;
     const email = $('emailInput').value.trim();
@@ -110,17 +186,14 @@ $('emailForm').addEventListener('submit', async (e) => {
     }
     pendingEmail = email;
     $('sentTo').textContent = email;
-    $('emailForm').hidden = true;
-    $('codeForm').hidden = false;
+    showLoginStep('code');
     $('codeInput').focus();
 });
 
 $('codeForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('loginError').textContent = '';
-    if (!$('agreeInput').checked) {
-        return ($('loginError').textContent = 'Tick the 18+ box first ☝️');
-    }
+    if (needsAgreement()) return;
     const btn = e.submitter;
     btn.disabled = true;
     const { ok, data } = await api('/api/verify-code', { email: pendingEmail, code: $('codeInput').value, agree: true });
@@ -131,14 +204,11 @@ $('codeForm').addEventListener('submit', async (e) => {
     window.Entry.play(() => enterLobby(data.email));
 });
 
-$('changeEmailBtn').addEventListener('click', () => {
-    $('codeForm').hidden = true;
-    $('emailForm').hidden = false;
-    $('loginError').textContent = '';
-});
+$('changeEmailBtn').addEventListener('click', () => showLoginStep('email'));
 
 $('logoutBtn').addEventListener('click', async () => {
     await api('/api/logout', {});
+    try { google.accounts.id.disableAutoSelect(); } catch { }
     location.reload();
 });
 
@@ -222,6 +292,7 @@ $('goBtn').addEventListener('click', async () => {
         if (!iceServers) {
             const { ok: iceOk, data } = await api('/api/ice');
             iceServers = iceOk ? data.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }];
+            relayOnly = iceOk && data.relayOnly === true;
         }
     }
     document.body.classList.toggle('text-mode', mode === 'text');
@@ -344,7 +415,7 @@ function goHome() {
 
 // ---------- Video (WebRTC) ----------
 function startPeer(initiator) {
-    peer = new SimplePeer({ initiator, stream: localStream, trickle: false, config: { iceServers } });
+    peer = new SimplePeer({ initiator, stream: localStream, trickle: false, config: { iceServers, iceTransportPolicy: relayOnly ? 'relay' : 'all' } });
     const thisPeer = peer;
 
     peer.on('signal', (data) => socket.emit('signal', data));

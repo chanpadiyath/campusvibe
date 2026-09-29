@@ -39,26 +39,37 @@
                         from campus, skip whenever you want.
                     </p>
 
-                    <form id="emailForm" class="hl-form pull-up-later">
-                        <label for="emailInput" class="sr-only">Your SRM email</label>
-                        <div class="hl-pill">
-                            <input id="emailInput" type="email" placeholder="yourname@srmist.edu.in" autocomplete="email" required>
-                            <button type="submit" class="hl-go" aria-label="Send me a login code">
-                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                            </button>
-                        </div>
-                    </form>
+                    <div class="hl-login pull-up-later">
+                        <label class="hl-check"><input id="agreeInput" type="checkbox"> <span>I'm 18+ and won't be creepy: no nudity, harassment or spam. People reported by several users get banned.</span></label>
+                        <label class="hl-check"><input id="termsInput" type="checkbox"> <span>I agree to the <a href="/terms" target="_blank" rel="noopener">Terms &amp; Conditions</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
 
-                    <form id="codeForm" class="hl-form" hidden>
-                        <p class="hl-hint">Code sent to <b id="sentTo"></b>. <button type="button" id="changeEmailBtn" class="hl-link">Change</button></p>
-                        <div class="hl-pill">
-                            <input id="codeInput" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code" required>
-                            <button type="submit" class="hl-go" aria-label="Log in">
-                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                            </button>
+                        <div id="googleArea" class="hl-google" hidden>
+                            <div id="googleBtn"></div>
+                            <button type="button" id="useCodeBtn" class="hl-link" hidden>Use an email code instead</button>
                         </div>
-                        <label class="hl-check"><input id="agreeInput" type="checkbox"> I'm 18+ and won't be creepy: no nudity, harassment or spam. Reported people get banned.</label>
-                    </form>
+
+                        <form id="emailForm" class="hl-form" hidden>
+                            <label for="emailInput" class="sr-only">Your SRM email</label>
+                            <div class="hl-pill">
+                                <input id="emailInput" type="email" placeholder="yourname@srmist.edu.in" autocomplete="email" required>
+                                <button type="submit" class="hl-go" aria-label="Send me a login code">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                                </button>
+                            </div>
+                            <button type="button" id="useGoogleBtn" class="hl-link" hidden>Use Google instead</button>
+                        </form>
+
+                        <form id="codeForm" class="hl-form" hidden>
+                            <p class="hl-hint">Code sent to <b id="sentTo"></b>. <button type="button" id="changeEmailBtn" class="hl-link">Change</button></p>
+                            <label for="codeInput" class="sr-only">6-digit login code</label>
+                            <div class="hl-pill">
+                                <input id="codeInput" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code" required>
+                                <button type="submit" class="hl-go" aria-label="Log in">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
 
                     <p id="loginError" class="hl-error" role="alert"></p>
                     <p class="hl-foot">* For verified SRM students only. Not an official SRM app.</p>

@@ -1,5 +1,5 @@
 {
-  "name": "local-omegle",
+  "name": "campusvibe",
   "version": "1.0.0",
   "description": "",
   "main": "server.js",
@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
+    "nodemailer": "^10.0.12",
     "socket.io": "^4.8.1"
   },
   "engines": {

@@ -39,12 +39,13 @@ app.use(express.json({ limit: '10kb' }));
 // Only the third parties the page actually uses are allowed to load
 const CSP = [
     "default-src 'self'",
-    "script-src 'self' https://cdnjs.cloudflare.com",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "script-src 'self' https://cdnjs.cloudflare.com https://accounts.google.com/gsi/client",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style",
+    "frame-src https://accounts.google.com/gsi/",
     "font-src 'self' https://fonts.gstatic.com",
     "media-src 'self' blob: https://d8j0ntlcm91z4.cloudfront.net",
     "img-src 'self' data:",
-    "connect-src 'self'",
+    "connect-src 'self' https://accounts.google.com/gsi/",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -52,7 +53,7 @@ const CSP = [
 
 app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('Referrer-Policy', 'no-referrer');
+    res.set('Referrer-Policy', 'strict-origin-when-cross-origin');   // Google sign-in checks the page origin
     res.set('X-Frame-Options', 'DENY');
     res.set('Content-Security-Policy', CSP);
     res.set('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(), payment=(), usb=()');
@@ -175,23 +176,38 @@ function normalizeEmail(raw) {
 
 const hashCode = (email, code) => crypto.createHash('sha256').update(`${email}:${code}:${SESSION_SECRET}`).digest('hex');
 
+// Login codes are sent through a Gmail account (free, ~500/day) or Resend (needs your own domain).
+// With neither set up, codes are printed in the terminal while developing.
+const GMAIL_USER = (process.env.GMAIL_USER || '').trim();
+const GMAIL_APP_PASSWORD = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
+let gmail = null;
+if (GMAIL_USER && GMAIL_APP_PASSWORD) {
+    gmail = require('nodemailer').createTransport({
+        service: 'gmail',
+        auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+    });
+}
+const emailConfigured = !!gmail || !!process.env.RESEND_API_KEY;
+
 async function sendCodeEmail(email, code) {
-    if (!process.env.RESEND_API_KEY) {
-        if (IS_PROD) throw new Error('RESEND_API_KEY is not set');
-        console.log(`\n📧 [dev mode] Login code for ${email}: ${code}\n`);
+    const subject = `Your CampusVibe login code: ${code}`;
+    const text = `Your CampusVibe login code is ${code}\n\nIt expires in 10 minutes. If you didn't ask for this, you can ignore this email.`;
+
+    if (gmail) {
+        await gmail.sendMail({ from: `CampusVibe <${GMAIL_USER}>`, to: email, subject, text });
         return;
     }
-    const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            from: process.env.EMAIL_FROM || 'onboarding@resend.dev',
-            to: email,
-            subject: `Your login code: ${code}`,
-            text: `Your login code is ${code}\n\nIt expires in 10 minutes. If you didn't ask for this, ignore this email.`,
-        }),
-    });
-    if (!res.ok) throw new Error(`Resend error ${res.status}: ${await res.text()}`);
+    if (process.env.RESEND_API_KEY) {
+        const res = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: process.env.EMAIL_FROM || 'onboarding@resend.dev', to: email, subject, text }),
+        });
+        if (!res.ok) throw new Error(`Resend error ${res.status}: ${await res.text()}`);
+        return;
+    }
+    if (IS_PROD) throw new Error('No email sender configured (set GMAIL_USER + GMAIL_APP_PASSWORD, or RESEND_API_KEY)');
+    console.log(`\n📧 [dev mode] Login code for ${email}: ${code}\n`);
 }
 
 app.post('/api/request-code', async (req, res) => {
@@ -221,7 +237,7 @@ app.post('/api/request-code', async (req, res) => {
 app.post('/api/verify-code', (req, res) => {
     const email = normalizeEmail(req.body?.email);
     const code = String(req.body?.code || '').trim();
-    if (req.body?.agree !== true) return res.status(400).json({ error: 'You need to confirm you are 18+ and accept the rules.' });
+    if (req.body?.agree !== true) return res.status(400).json({ error: 'You need to confirm you are 18+ and accept the Terms & Privacy Policy.' });
 
     const entry = email && pendingCodes.get(email);
     if (!entry || entry.expires < Date.now()) return res.status(400).json({ error: 'Code expired. Ask for a new one.' });
@@ -238,6 +254,68 @@ app.post('/api/verify-code', (req, res) => {
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ email: req.email }));
+
+// ---------- GOOGLE SIGN-IN (SRM's email runs on Google Workspace) ----------
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const codeLoginAvailable = !IS_PROD || emailConfigured;
+
+// What the login page should offer
+app.get('/api/config', (req, res) => {
+    res.json({ googleClientId: GOOGLE_CLIENT_ID || null, codeLogin: codeLoginAvailable, domain: ALLOWED_DOMAINS[0] });
+});
+
+// Google's public signing keys, cached as long as Google says they're valid
+let googleCerts = { keys: [], expires: 0 };
+async function getGoogleCerts() {
+    if (Date.now() < googleCerts.expires) return googleCerts.keys;
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+    if (!res.ok) throw new Error(`Could not fetch Google keys (${res.status})`);
+    const maxAge = Number((res.headers.get('cache-control') || '').match(/max-age=(\d+)/)?.[1] || 3600);
+    googleCerts = { keys: (await res.json()).keys, expires: Date.now() + maxAge * 1000 };
+    return googleCerts.keys;
+}
+
+// Check a Google ID token ourselves: signature, issuer, audience, expiry, verified SRM account
+function verifyGoogleIdToken(token, keys, clientId, now = Date.now()) {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 3) throw new Error('malformed token');
+    const [h, p, sig] = parts;
+    const header = JSON.parse(Buffer.from(h, 'base64url').toString());
+    const payload = JSON.parse(Buffer.from(p, 'base64url').toString());
+    if (header.alg !== 'RS256') throw new Error('unexpected algorithm');
+    const jwk = keys.find(k => k.kid === header.kid);
+    if (!jwk) throw new Error('unknown signing key');
+    const ok = crypto.verify('RSA-SHA256', Buffer.from(`${h}.${p}`), crypto.createPublicKey({ key: jwk, format: 'jwk' }), Buffer.from(sig, 'base64url'));
+    if (!ok) throw new Error('bad signature');
+    if (!['accounts.google.com', 'https://accounts.google.com'].includes(payload.iss)) throw new Error('wrong issuer');
+    if (payload.aud !== clientId) throw new Error('wrong audience');
+    if (!payload.exp || payload.exp * 1000 < now - 60e3) throw new Error('expired');
+    if (payload.email_verified !== true && payload.email_verified !== 'true') throw new Error('email not verified');
+    const email = normalizeEmail(payload.email);
+    // hd is only present for Workspace accounts, so personal Gmail can never pass
+    if (!email || !ALLOWED_DOMAINS.includes(String(payload.hd || '').toLowerCase())) throw new Error('not an allowed domain');
+    return email;
+}
+
+app.post('/api/google', async (req, res) => {
+    if (!GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'Google sign-in is not set up yet.' });
+    if (req.body?.agree !== true) return res.status(400).json({ error: 'You need to confirm you are 18+ and accept the Terms & Privacy Policy.' });
+    if (rateLimited(`google:${req.ip}`, 30, 3600e3)) return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+
+    let email;
+    try {
+        email = verifyGoogleIdToken(req.body?.credential, await getGoogleCerts(), GOOGLE_CLIENT_ID);
+    } catch (err) {
+        const domainProblem = err.message === 'not an allowed domain';
+        return res.status(domainProblem ? 403 : 400).json({
+            error: domainProblem ? `Use your college Google account (@${ALLOWED_DOMAINS.join(' or @')})` : 'Google sign-in failed. Try again.',
+        });
+    }
+    if (isBanned(email)) return res.status(403).json({ error: 'banned', until: db.bans[email].until });
+
+    res.set('Set-Cookie', sessionCookie(createSession(email), SESSION_DAYS * 86400));
+    res.json({ email });
+});
 
 app.post('/api/logout', (req, res) => {
     res.set('Set-Cookie', sessionCookie('', 0));
@@ -431,7 +509,9 @@ server.on('error', (err) => {
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on ${useLocalHttps ? 'https' : 'http'}://localhost:${PORT}`);
     console.log(`Allowed email domains: ${ALLOWED_DOMAINS.join(', ')}`);
-    if (!process.env.RESEND_API_KEY) console.log('No RESEND_API_KEY set: login codes will be printed here instead of emailed.');
+    if (gmail) console.log(`Login codes are emailed from ${GMAIL_USER}`);
+    else if (process.env.RESEND_API_KEY) console.log('Login codes are emailed through Resend');
+    else console.log('No email sender set up: login codes will be printed here instead of emailed.');
 });
 
 // Minimal .env reader so you don't need an extra package.
@@ -442,3 +522,5 @@ function loadEnvFile(file) {
         if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
     }
 }
+
+module.exports = { verifyGoogleIdToken };

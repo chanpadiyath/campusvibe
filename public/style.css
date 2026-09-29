@@ -131,6 +131,9 @@ body[data-screen="login"] { background: #000; }
 .hl-about { margin: 0; font-size: clamp(0.8rem, 1.1vw, 1rem); line-height: 1.2; color: rgba(225, 224, 204, 0.7); }
 
 .hl-form { display: flex; flex-direction: column; gap: 12px; }
+.hl-login { display: flex; flex-direction: column; gap: 16px; }
+.hl-google { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-height: 44px; }
+.hl-google .hl-link, .hl-form > .hl-link { align-self: flex-start; font-size: 0.85rem; color: rgba(225, 224, 204, 0.85); }
 .hl-pill {
     display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 20px; border-radius: 999px;
     background: var(--cream); color: #000; transition: gap 0.2s;
@@ -155,6 +158,8 @@ body[data-screen="login"] { background: #000; }
 .hl-link { background: none; border: none; padding: 0; color: var(--cream); text-decoration: underline; cursor: pointer; font: inherit; }
 .hl-check { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8rem; font-weight: 400; line-height: 1.35; color: rgba(225, 224, 204, 0.75); cursor: pointer; }
 .hl-check input { margin: 2px 0 0; width: 16px; height: 16px; flex: none; accent-color: var(--cream); }
+.hl-check a { color: var(--cream); text-decoration: underline; text-underline-offset: 2px; }
+.hl-check a:hover { color: #fff; }
 .hl-error { margin: 0; min-height: 1.2em; font-size: 0.9rem; color: #ffb4a8; }
 .hl-foot { margin: 0; font-size: 0.72rem; color: rgba(225, 224, 204, 0.5); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
