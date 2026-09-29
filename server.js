@@ -176,8 +176,13 @@ function normalizeEmail(raw) {
 
 const hashCode = (email, code) => crypto.createHash('sha256').update(`${email}:${code}:${SESSION_SECRET}`).digest('hex');
 
-// Login codes are sent through a Gmail account (free, ~500/day) or Resend (needs your own domain).
-// With neither set up, codes are printed in the terminal while developing.
+// Login codes can be sent three ways (first one that's set up wins):
+//  1. EMAIL_WEBHOOK_URL: a Google Apps Script that sends from your Gmail over HTTPS (works on hosts that block email ports, like Render's free plan)
+//  2. GMAIL_USER + GMAIL_APP_PASSWORD: Gmail directly over SMTP (works on your laptop)
+//  3. RESEND_API_KEY: Resend (needs your own domain)
+// With none set up, codes are printed in the terminal while developing.
+const EMAIL_WEBHOOK_URL = (process.env.EMAIL_WEBHOOK_URL || '').trim();
+const EMAIL_WEBHOOK_SECRET = (process.env.EMAIL_WEBHOOK_SECRET || '').trim();
 const GMAIL_USER = (process.env.GMAIL_USER || '').trim();
 const GMAIL_APP_PASSWORD = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
 let gmail = null;
@@ -185,14 +190,31 @@ if (GMAIL_USER && GMAIL_APP_PASSWORD) {
     gmail = require('nodemailer').createTransport({
         service: 'gmail',
         auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+        // Fail fast instead of hanging if the host blocks email ports
+        connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000,
     });
 }
-const emailConfigured = !!gmail || !!process.env.RESEND_API_KEY;
+const webhookConfigured = !!(EMAIL_WEBHOOK_URL && EMAIL_WEBHOOK_SECRET);
+const emailConfigured = webhookConfigured || !!gmail || !!process.env.RESEND_API_KEY;
 
 async function sendCodeEmail(email, code) {
     const subject = `Your CampusVibe login code: ${code}`;
     const text = `Your CampusVibe login code is ${code}\n\nIt expires in 10 minutes. If you didn't ask for this, you can ignore this email.`;
 
+    if (webhookConfigured) {
+        const res = await fetch(EMAIL_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },     // plain text avoids a CORS preflight on Apps Script
+            body: JSON.stringify({ secret: EMAIL_WEBHOOK_SECRET, to: email, code }),
+            redirect: 'follow',
+            signal: AbortSignal.timeout(20000),
+        });
+        const body = await res.text();
+        let result = {};
+        try { result = JSON.parse(body); } catch { }
+        if (!res.ok || result.ok !== true) throw new Error(`Email webhook failed (${res.status}): ${result.error || body.slice(0, 200)}`);
+        return;
+    }
     if (gmail) {
         await gmail.sendMail({ from: `CampusVibe <${GMAIL_USER}>`, to: email, subject, text });
         return;
@@ -202,11 +224,12 @@ async function sendCodeEmail(email, code) {
             method: 'POST',
             headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ from: process.env.EMAIL_FROM || 'onboarding@resend.dev', to: email, subject, text }),
+            signal: AbortSignal.timeout(20000),
         });
         if (!res.ok) throw new Error(`Resend error ${res.status}: ${await res.text()}`);
         return;
     }
-    if (IS_PROD) throw new Error('No email sender configured (set GMAIL_USER + GMAIL_APP_PASSWORD, or RESEND_API_KEY)');
+    if (IS_PROD) throw new Error('No email sender configured (set EMAIL_WEBHOOK_URL + EMAIL_WEBHOOK_SECRET, GMAIL_USER + GMAIL_APP_PASSWORD, or RESEND_API_KEY)');
     console.log(`\n📧 [dev mode] Login code for ${email}: ${code}\n`);
 }
 
@@ -509,7 +532,8 @@ server.on('error', (err) => {
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on ${useLocalHttps ? 'https' : 'http'}://localhost:${PORT}`);
     console.log(`Allowed email domains: ${ALLOWED_DOMAINS.join(', ')}`);
-    if (gmail) console.log(`Login codes are emailed from ${GMAIL_USER}`);
+    if (webhookConfigured) console.log('Login codes are emailed through the Google Apps Script mailer');
+    else if (gmail) console.log(`Login codes are emailed from ${GMAIL_USER}`);
     else if (process.env.RESEND_API_KEY) console.log('Login codes are emailed through Resend');
     else console.log('No email sender set up: login codes will be printed here instead of emailed.');
 });
