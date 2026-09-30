@@ -302,26 +302,29 @@ app.post('/api/request-code', async (req, res) => {
     if (!email) return res.status(400).json({ error: `Use your college email (@${ALLOWED_DOMAINS.join(' or @')})` });
     if (isBanned(email)) return res.status(403).json({ error: 'This account is banned.' });
 
-    if (rateLimited(`ip:${req.ip}`, 10, 3600e3) || rateLimited(`hour:${email}`, 5, 3600e3)) {
-        return res.status(429).json({ error: 'Too many codes requested. Try again later.' });
-    }
-    if (rateLimited(`min:${email}`, 1, 60e3)) {
-        return res.status(429).json({ error: 'Wait a minute before asking for another code.' });
-    }
-
-    // Asking again re-sends the SAME code while it's valid, so every email they got still works.
-    // Only when less than 2 minutes are left do they get a fresh code with a full 15 minutes.
+    // Never block a student. Asking again always gives the SAME code while it's valid.
+    // To save the daily email quota we just don't send a duplicate email if one went out
+    // under a minute ago (or 5 already this hour) — their code still works.
     let entry = pendingCodes.get(email);
-    const reused = entry && entry.expires - Date.now() > 2 * 60e3;
+    const reused = !!entry && entry.expires - Date.now() > 2 * 60e3;
     if (!reused) {
+        // Brand-new code: only a spam guard (campus Wi-Fi shares one IP, so this is generous)
+        if (rateLimited(`ip:${req.ip}`, 300, 3600e3)) return res.status(429).json({ error: 'Too many login attempts from this network. Try again in a few minutes.' });
         const code = crypto.randomInt(0, 1e6).toString().padStart(6, '0');
-        entry = { code, hash: hashCode(email, code), expires: Date.now() + CODE_TTL_MS, wrong: 0 };
+        entry = { code, hash: hashCode(email, code), expires: Date.now() + CODE_TTL_MS, wrong: 0, sentAt: [] };
         pendingCodes.set(email, entry);
     }
     const minutesLeft = Math.max(1, Math.round((entry.expires - Date.now()) / 60e3));
+    const now = Date.now();
+    entry.sentAt = (entry.sentAt || []).filter(t => now - t < 3600e3);
+    const sentRecently = entry.sentAt.some(t => now - t < 60e3) || entry.sentAt.length >= 5;
+    if (reused && sentRecently) {
+        return res.json({ ok: true, minutes: minutesLeft, resent: true, emailed: false });
+    }
     try {
         await sendCodeEmail(email, entry.code, minutesLeft);
-        res.json({ ok: true, minutes: minutesLeft, resent: reused });
+        entry.sentAt.push(Date.now());
+        res.json({ ok: true, minutes: minutesLeft, resent: reused, emailed: true });
     } catch (err) {
         console.error(err);
         if (!reused) pendingCodes.delete(email);
