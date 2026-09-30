@@ -550,6 +550,9 @@ io.use((socket, next) => {
     if (isBanned(session.email)) return next(new Error('banned'));
     socket.data.email = session.email;
     socket.data.device = session.device;
+    // Public IP (behind Render's proxy it's the first X-Forwarded-For entry). Only used to tell whether
+    // two matched people are on the same network (e.g. both on campus Wi-Fi); never stored.
+    socket.data.ip = String(socket.handshake.headers['x-forwarded-for'] || '').split(',')[0].trim() || socket.handshake.address;
     next();
 });
 
@@ -604,8 +607,12 @@ io.on('connection', (socket) => {
         socket.data.lastPartner = best.id;
         partnerSocket.data.lastPartner = socket.id;
 
-        socket.emit('matched', { initiator: true, mode, shared });
-        partnerSocket.emit('matched', { initiator: false, mode, shared });
+        // Same public address = same network (e.g. both on campus Wi-Fi): they may connect video directly,
+        // since there's no private IP to hide from each other. The call id keeps old signals out of new calls.
+        const sameNetwork = socket.data.ip === partnerSocket.data.ip;
+        const callId = crypto.randomBytes(6).toString('hex');
+        socket.emit('matched', { initiator: true, mode, shared, sameNetwork, callId });
+        partnerSocket.emit('matched', { initiator: false, mode, shared, sameNetwork, callId });
     });
 
     // 2. Signaling (video handshake) — only ever relayed to your current partner

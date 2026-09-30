@@ -248,6 +248,8 @@ function renderMode() {
 document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => {
     mode = b.dataset.mode;
     renderMode();
+    // Picking Video starts loading the nudity filter in the background, so it's ready before the call
+    if (mode === 'video') window.NsfwGuard?.preload();
 }));
 
 
@@ -351,7 +353,8 @@ function connectSocket() {
 
     socket.on('online', (n) => document.querySelectorAll('.online-count').forEach(el => (el.textContent = n)));
 
-    socket.on('matched', ({ initiator, shared }) => {
+    socket.on('matched', ({ initiator, shared, sameNetwork, callId }) => {
+        currentCallId = callId;
         clearTimeout(researchTimer);
         isMatched = true;
         window.NsfwGuard?.newMatch();
@@ -366,11 +369,12 @@ function connectSocket() {
             setStatus('Chatting with a stranger 💬');
         } else {
             setStatus('Connecting video… 📡', true);
-            startPeer(initiator);
+            startPeer(initiator, sameNetwork);
         }
     });
 
-    socket.on('signal', (signal) => peer?.signal(signal));
+    // Only accept video-setup messages for the current call (not leftovers from the previous stranger)
+    socket.on('signal', (msg) => { if (msg?.callId === currentCallId && peer) peer.signal(msg.data); });
 
     socket.on('chat_message', (text) => {
         $('typing').hidden = true;
@@ -445,14 +449,31 @@ function goHome() {
 }
 
 // ---------- Video (WebRTC) ----------
-function startPeer(initiator) {
-    peer = new SimplePeer({ initiator, stream: localStream, trickle: false, config: { iceServers, iceTransportPolicy: relayOnly ? 'relay' : 'all' } });
-    const thisPeer = peer;
+let currentCallId = null;
 
-    peer.on('signal', (data) => socket.emit('signal', data));
+function startPeer(initiator, sameNetwork) {
+    const started = performance.now();
+    peer = new SimplePeer({
+        initiator,
+        stream: localStream,
+        // Trickle: send each connection route as soon as it's found, instead of waiting for all of them.
+        trickle: true,
+        config: {
+            iceServers,
+            // Relay-only hides IPs from strangers; on the same network (e.g. campus Wi-Fi) connect directly.
+            iceTransportPolicy: relayOnly && !sameNetwork ? 'relay' : 'all',
+            iceCandidatePoolSize: 4,   // start gathering routes before they're needed
+        },
+    });
+    const thisPeer = peer;
+    const callId = currentCallId;
+
+    peer.on('signal', (data) => socket.emit('signal', { callId, data }));
+    peer.on('connect', () => console.info(`Video connected in ${Math.round(performance.now() - started)} ms`));
 
     peer.on('stream', (stream) => {
         clearTimeout(videoTimer);
+        console.info(`Video showing after ${Math.round(performance.now() - started)} ms`);
         $('remoteVideo').srcObject = stream;
         $('remotePlaceholder').hidden = true;
         setStatus('Connected! 🎉');
