@@ -14,7 +14,7 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'srmist.edu.in')
     .split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
 const SESSION_SECRET = process.env.SESSION_SECRET || (IS_PROD ? '' : 'dev-only-secret');
 const SESSION_DAYS = 365;          // renewed on every visit, so people stay logged in until they log out
-const CODE_TTL_MS = 10 * 60 * 1000;
+const CODE_TTL_MS = 15 * 60 * 1000;       // a login code works (and can be reused) for 15 minutes
 const REPORTS_TO_BAN = Number(process.env.REPORTS_TO_BAN) || 3;
 const BAN_HOURS = Number(process.env.BAN_HOURS) || 24;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -228,7 +228,7 @@ setInterval(() => {
 }, 10 * 60 * 1000).unref();
 
 // ---------- EMAIL LOGIN ----------
-const pendingCodes = new Map(); // email -> { hash, expires, attempts }
+const pendingCodes = new Map(); // email -> { code, hash, expires, wrong } (memory only, gone after 15 min)
 
 function normalizeEmail(raw) {
     if (typeof raw !== 'string') return null;
@@ -261,15 +261,15 @@ if (GMAIL_USER && GMAIL_APP_PASSWORD) {
 const webhookConfigured = !!(EMAIL_WEBHOOK_URL && EMAIL_WEBHOOK_SECRET);
 const emailConfigured = webhookConfigured || !!gmail || !!process.env.RESEND_API_KEY;
 
-async function sendCodeEmail(email, code) {
+async function sendCodeEmail(email, code, minutes = 15) {
     const subject = `Your CampusVibe login code: ${code}`;
-    const text = `Your CampusVibe login code is ${code}\n\nIt expires in 10 minutes. If you didn't ask for this, you can ignore this email.`;
+    const text = `Your CampusVibe login code is ${code}\n\nIt works for the next ${minutes} minutes, and you can use it more than once. If you didn't ask for this, you can ignore this email.`;
 
     if (webhookConfigured) {
         const res = await fetch(EMAIL_WEBHOOK_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'text/plain' },     // plain text avoids a CORS preflight on Apps Script
-            body: JSON.stringify({ secret: EMAIL_WEBHOOK_SECRET, to: email, code }),
+            body: JSON.stringify({ secret: EMAIL_WEBHOOK_SECRET, to: email, code, minutes }),
             redirect: 'follow',
             signal: AbortSignal.timeout(20000),
         });
@@ -309,14 +309,22 @@ app.post('/api/request-code', async (req, res) => {
         return res.status(429).json({ error: 'Wait a minute before asking for another code.' });
     }
 
-    const code = crypto.randomInt(0, 1e6).toString().padStart(6, '0');
-    pendingCodes.set(email, { hash: hashCode(email, code), expires: Date.now() + CODE_TTL_MS, attempts: 0 });
+    // Asking again re-sends the SAME code while it's valid, so every email they got still works.
+    // Only when less than 2 minutes are left do they get a fresh code with a full 15 minutes.
+    let entry = pendingCodes.get(email);
+    const reused = entry && entry.expires - Date.now() > 2 * 60e3;
+    if (!reused) {
+        const code = crypto.randomInt(0, 1e6).toString().padStart(6, '0');
+        entry = { code, hash: hashCode(email, code), expires: Date.now() + CODE_TTL_MS, wrong: 0 };
+        pendingCodes.set(email, entry);
+    }
+    const minutesLeft = Math.max(1, Math.round((entry.expires - Date.now()) / 60e3));
     try {
-        await sendCodeEmail(email, code);
-        res.json({ ok: true });
+        await sendCodeEmail(email, entry.code, minutesLeft);
+        res.json({ ok: true, minutes: minutesLeft, resent: reused });
     } catch (err) {
         console.error(err);
-        pendingCodes.delete(email);
+        if (!reused) pendingCodes.delete(email);
         res.status(500).json({ error: "Couldn't send the email. Try again in a bit." });
     }
 });
@@ -328,14 +336,17 @@ app.post('/api/verify-code', (req, res) => {
 
     const entry = email && pendingCodes.get(email);
     if (!entry || entry.expires < Date.now()) return res.status(400).json({ error: 'Code expired. Ask for a new one.' });
-    if (++entry.attempts > 5) {
-        pendingCodes.delete(email);
-        return res.status(429).json({ error: 'Too many wrong tries. Ask for a new code.' });
-    }
     const a = Buffer.from(hashCode(email, code)), b = Buffer.from(entry.hash);
-    if (!crypto.timingSafeEqual(a, b)) return res.status(400).json({ error: 'Wrong code, try again.' });
+    if (!crypto.timingSafeEqual(a, b)) {
+        // 5 wrong guesses and the code is thrown away, so nobody can guess their way in
+        if (++entry.wrong >= 5) {
+            pendingCodes.delete(email);
+            return res.status(429).json({ error: 'Too many wrong tries. Ask for a new code.' });
+        }
+        return res.status(400).json({ error: 'Wrong code, try again.' });
+    }
 
-    pendingCodes.delete(email);
+    // Right code: log in. The code stays valid until its 15 minutes are up (e.g. for a second device).
     startSession(res, email);
     res.json({ email });
 });

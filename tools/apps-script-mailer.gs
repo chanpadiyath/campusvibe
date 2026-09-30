@@ -19,6 +19,7 @@ function doPost(e) {
   // Only ever send a 6-digit code to an SRM address, so a leaked secret can't be used for spam
   const to = String(data.to || '').trim().toLowerCase();
   const code = String(data.code || '');
+  const minutes = Math.min(15, Math.max(1, parseInt(data.minutes, 10) || 15));
   if (!/^[a-z0-9._%+-]+@srmist\.edu\.in$/.test(to) || !/^\d{6}$/.test(code)) {
     return reply({ ok: false, error: 'bad request' });
   }
@@ -27,7 +28,7 @@ function doPost(e) {
     to: to,
     name: 'CampusVibe',
     subject: 'Your CampusVibe login code: ' + code,
-    body: 'Your CampusVibe login code is ' + code + '\n\nIt expires in 10 minutes. If you didn\'t ask for this, you can ignore this email.',
+    body: 'Your CampusVibe login code is ' + code + '\n\nIt works for the next ' + minutes + ' minutes, and you can use it more than once. If you didn\'t ask for this, you can ignore this email.',
   });
   return reply({ ok: true });
 }

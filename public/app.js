@@ -196,6 +196,8 @@ $('emailForm').addEventListener('submit', async (e) => {
     }
     pendingEmail = email;
     $('sentTo').textContent = email;
+    $('sentLabel').textContent = data.resent ? 'Same code re-sent to' : 'Code sent to';
+    $('codeMinutes').textContent = data.minutes || 15;
     showLoginStep('code');
     $('codeInput').focus();
 });
