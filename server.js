@@ -61,6 +61,8 @@ app.use((req, res, next) => {
     next();
 });
 // Pages can be linked without .html (e.g. /privacy once legal pages are added)
+// Tiny wake/keep-alive ping for uptime monitors (UptimeRobot etc.) — stops Render's free plan sleeping
+app.get('/healthz', (req, res) => res.type('text').send('ok'));
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 // Nudity filter libraries, served from our own server (runs entirely in the browser; video never leaves the device for this)
 app.get('/vendor/nsfwjs.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/browser/nsfwjs.min.js'), { maxAge: '30d' }));
