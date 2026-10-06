@@ -2,7 +2,66 @@ const $ = (id) => document.getElementById(id);
 
 const SUGGESTED = ['coding', 'music', 'gaming', 'cricket', 'movies', 'anime', 'gym', 'startups', 'books', 'memes', 'placements', 'travel'];
 const EMOJI = { coding: '💻', music: '🎵', gaming: '🎮', cricket: '🏏', movies: '🎬', anime: '🍥', gym: '💪', startups: '🚀', books: '📚', memes: '😂', placements: '💼', travel: '✈️' };
-const OPENERS = ["Say hi! 👋", "Break the ice 🧊", "Ask them their major 🎓", "Rate the mess food 1–10 🍛"];
+// Icebreakers: tapping "Break the ice" sends ONE of these (once per chat; no repeats until all are used)
+const ICEBREAKERS = [
+    "Would you rather have unlimited Swiggy credits or never have an 8 AM class again? 🍔⏰",
+    "Would you rather your crush see your search history or your camera roll? 👀",
+    "Would you rather be famous on campus for a viral reel or a legendary fest performance? 🎤",
+    "Would you rather give a surprise viva unprepared or sing on stage at the fest? 😬",
+    "Would you rather always have 100% attendance or always have 100% phone battery? 🔋",
+    "Would you rather fight one horse-sized pigeon or 50 pigeon-sized horses? 🐴",
+    "Would you rather eat mess food forever or only Maggi forever? 🍜",
+    "Would you rather know every exam question in advance or every crush's answer in advance? 💘",
+    "Hot take time: what's the most overrated thing about college life? 🔥",
+    "What's a hill you will absolutely die on? (Food opinions count.) ⛰️",
+    "Unpopular opinion you'd defend in front of the whole class? 🎙️",
+    "Rank these: biryani, momos, shawarma, dosa. No ties allowed. 🏆",
+    "Is a hot dog a sandwich? Defend your answer like it's your end-sem. 🌭",
+    "What's the funniest thing you've seen happen in a lecture? 😂",
+    "Worst excuse you've ever given for missing class (that actually worked)? 🙈",
+    "If campus had a secret level, where would the entrance be? 🕹️",
+    "What's your 2 AM hostel/room snack of choice? 🌙",
+    "Which professor would survive a zombie apocalypse the longest? 🧟",
+    "If you ran the canteen for a day, what's the first thing you'd change? 🍽️",
+    "Describe your attendance percentage using only an emoji. 📉",
+    "What's the most chaotic group project story you have? 📂",
+    "Back-bencher, front-bencher, or 'I sit wherever my friends are'? 🪑",
+    "You're the main character in a movie. What's the title and genre? 🎬",
+    "If your life had a loading screen tip, what would it say? 💡",
+    "You get one cheat code for real life. What does it do? 🎮",
+    "If your pet (real or imaginary) could talk, what would it roast you for? 🐶",
+    "You can only eat one cuisine for the rest of your life. Go. 🌶️",
+    "You wake up as the college principal for one day. First announcement? 📢",
+    "If you were a villain, what would your evil plan be? 😈",
+    "Your phone's autocorrect becomes your personality. What are you now? 📱",
+    "You can instantly master one skill. What are you picking? ⚡",
+    "Which fictional world would you move into tomorrow? 🪄",
+    "If you started a YouTube channel today, what would it be about? 📹",
+    "What's something you're weirdly, unreasonably good at? 🏅",
+    "What's the last song you played on repeat until it got annoying? 🎧",
+    "What's a small thing that instantly makes your day better? ☀️",
+    "What's your go-to karaoke song when nobody's judging? 🎤",
+    "What's the best trip you've been on, and what made it so good? ✈️",
+    "Which show or anime would you make everyone watch if you could? 📺",
+    "What's your most useless talent? Show-off time. 🤹",
+    "What's the most 'main character' thing you've ever done? 🌟",
+    "What's one thing you'd do if you knew nobody would ever find out? (Keep it legal 😅)",
+    "What's your comfort movie that you've seen way too many times? 🍿",
+    "What's your current obsession? Anything goes. 🌀",
+    "Which emoji describes your personality best, and why? 😎",
+    "Rapid fire: chai or coffee, mountains or beaches, call or text? ☕",
+    "Rapid fire: night owl or early bird, cats or dogs, sweet or spicy? 🦉",
+    "Rapid fire: Marvel or DC, Insta or Snap, sunrise or sunset? 🌅",
+    "Two truths and a lie. You go first! 🤔",
+    "Tell me three emojis that sum up your week, and I'll guess what happened. 🔮",
+    "Guess my zodiac sign in one try. Winner gets bragging rights. ♈",
+    "Let's play: describe your dream day in exactly 5 words. ✋",
+];
+let icebreakerBag = [];
+function nextIcebreaker() {
+    if (!icebreakerBag.length) icebreakerBag = [...ICEBREAKERS].sort(() => Math.random() - 0.5);
+    return icebreakerBag.pop();
+}
 
 let socket = null;
 let myEmail = '';
@@ -78,6 +137,25 @@ function addSys(text, fun = false) {
     div.textContent = text;
     $('messages').appendChild(div);
     $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+// "Break the ice" button in the chat: one tap sends one random question as your message
+function addIcebreakerButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'icebreaker';
+    btn.innerHTML = '<b>🧊 Break the ice</b><span>Tap to ask a random question</span>';
+    // One question per chat: the button sends a single question when tapped, then disappears
+    btn.addEventListener('click', () => {
+        if (!isMatched || btn.disabled) return;
+        btn.disabled = true;
+        const q = nextIcebreaker();
+        socket.emit('chat_message', q);
+        btn.remove();
+        addMsg(q, 'me');
+        stopTyping();
+    }, { once: true });
+    $('messages').appendChild(btn);
 }
 
 function setChatEnabled(on) {
@@ -212,12 +290,37 @@ $('codeForm').addEventListener('submit', async (e) => {
     const { ok, data } = await api('/api/verify-code', { email: pendingEmail, code: $('codeInput').value, agree: true });
     btn.disabled = false;
     if (!ok) {
+        // Expired or locked out: the server already emailed a fresh code
+        if (data.newCode) {
+            $('codeInput').value = '';
+            $('sentLabel').textContent = 'New code sent to';
+            $('codeMinutes').textContent = data.minutes || 15;
+        }
         return ($('loginError').textContent = data.error || 'Something went wrong');
     }
     window.Entry.play(() => enterLobby(data.email));
 });
 
 $('changeEmailBtn').addEventListener('click', () => showLoginStep('email'));
+
+// "Resend code": really emails the code again (same code while it's still valid)
+$('resendBtn').addEventListener('click', async () => {
+    const btn = $('resendBtn'), status = $('resendStatus');
+    $('loginError').textContent = '';
+    btn.disabled = true;
+    status.textContent = 'Sending…';
+    const { ok, data } = await api('/api/request-code', { email: pendingEmail, resend: true });
+    if (!ok) {
+        status.textContent = '';
+        $('loginError').textContent = data.error || "Couldn't resend. Try again.";
+    } else {
+        status.textContent = data.emailed ? 'Sent ✓ check inbox & spam' : 'Just sent, give it a minute';
+        $('sentLabel').textContent = 'Code sent to';
+        $('codeMinutes').textContent = data.minutes || 15;
+    }
+    // Short cooldown so a double-tap doesn't send two emails
+    setTimeout(() => { btn.disabled = false; status.textContent = ''; }, 10000);
+});
 
 $('logoutBtn').addEventListener('click', async () => {
     await api('/api/logout', {});
@@ -234,7 +337,23 @@ function enterLobby(email) {
     renderChips();
     connectSocket();
     show('lobby');
+    // Only admins see the Moderation link in the menu
+    api('/api/me').then(({ ok, data }) => { $('menuAdmin').hidden = !(ok && data.admin); });
 }
+
+// ---------- Menu (top right of the lobby) ----------
+function setMenu(open) {
+    $('menuList').hidden = !open;
+    $('menuBtn').setAttribute('aria-expanded', open);
+    $('menuBtn').classList.toggle('open', open);
+    if (open) $('menuList').querySelector('a:not([hidden]), button')?.focus();
+}
+$('menuBtn').addEventListener('click', (e) => { e.stopPropagation(); setMenu($('menuList').hidden); });
+document.addEventListener('click', (e) => { if (!$('menuList').hidden && !e.target.closest('.menu')) setMenu(false); });
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('menuList').hidden) { setMenu(false); $('menuBtn').focus(); }
+});
+$('menuLogout').addEventListener('click', () => $('logoutBtn').click());
 
 function renderMode() {
     document.querySelectorAll('.mode').forEach(b => {
@@ -243,6 +362,9 @@ function renderMode() {
         b.setAttribute('aria-checked', active);
     });
     $('goBtn').classList.toggle('locked', !mode);
+    // The button says what's missing, then exactly what it will do
+    $('goLabel').textContent = mode === 'video' ? 'Start video chat' : mode === 'text' ? 'Start text chat' : 'Choose Video or Text to start';
+    document.querySelector('.enf-modes').classList.toggle('chosen', !!mode);
 }
 
 document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => {
@@ -362,7 +484,7 @@ function connectSocket() {
         $('messages').replaceChildren();
         addSys('You matched with someone who has a verified SRM email. Be kind, and never share your number, address or passwords.');
         if (shared.length) addSys(`You both like: ${shared.map(s => `${EMOJI[s] || '✨'} ${s}`).join(', ')}`, true);
-        addSys(OPENERS[Math.floor(Math.random() * OPENERS.length)], true);
+        addIcebreakerButton();
         setChatEnabled(true);
 
         if (mode === 'text') {

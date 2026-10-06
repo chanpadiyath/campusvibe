@@ -7,7 +7,7 @@
     <meta name="description" content="Random video & text chat, only for SRM students.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Inter:wght@400;500&family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;1,6..96,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Inter:wght@400;500&family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;1,6..96,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -69,6 +69,7 @@
                                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
                                 </button>
                             </div>
+                            <p class="hl-resend">Didn't get it? <button type="button" id="resendBtn" class="hl-link">Resend code</button> <span id="resendStatus" role="status"></span></p>
                         </form>
                     </div>
 
@@ -84,82 +85,59 @@
         <header class="enf-top">
             <span class="enf-mark">CAMPUSVIBE</span>
             <span class="enf-mono">SRM · AFTER HOURS</span>
-            <span class="enf-mono enf-online"><i></i><b class="online-count">0</b> ONLINE</span>
+            <div class="enf-top-right">
+                <span class="enf-mono enf-online"><i></i><b class="online-count">0</b> ONLINE</span>
+                <!-- Menu: add future items as links/buttons inside #menuList -->
+                <div class="menu">
+                    <button id="menuBtn" class="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menuList">
+                        <span></span><span></span><span></span>
+                    </button>
+                    <nav id="menuList" class="menu-list" aria-label="Menu" hidden>
+                        <button type="button" id="menuTheme" aria-pressed="false">☀️ Light mode</button>
+                        <hr>
+                        <a href="/terms" target="_blank" rel="noopener">Terms &amp; Conditions</a>
+                        <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+                        <a href="/admin" id="menuAdmin" target="_blank" rel="noopener" hidden>Moderation</a>
+                        <hr>
+                        <button type="button" id="menuLogout">Log out</button>
+                    </nav>
+                </div>
+            </div>
         </header>
 
-        <div class="enf-walk" id="enfWalk">
-            <div class="enf-stage">
-                <canvas class="enf-canvas" id="enfCanvas" aria-hidden="true"></canvas>
-                <div class="enf-vignette"></div>
-
-                <div class="enf-intro" id="enfIntro">
-                    <p class="enf-mono">WELCOME IN, <span id="helloName"></span></p>
-                    <h1 class="enf-headline">Three doors.<br><em>One campus.</em></h1>
-                    <p class="enf-copy">Every doorway on this axis opens onto someone from SRM. Scroll to walk forward, scroll back and you walk in reverse.</p>
-                    <div class="enf-actions">
-                        <button class="enf-btn" id="enfWalkBtn">WALK THE AXIS <span>→</span></button>
-                        <button class="enf-link" id="enfSkipBtn">SKIP TO THE LAST DOOR</button>
-                    </div>
-                </div>
-
-                <div class="enf-plates">
-                    <article class="enf-plate" data-accent="#b87b43" data-deep="#1d140c" data-name="LIMEN" data-matter="VERIFIED · SRM ONLY">
-                        <p class="enf-mono">CHAMBER I / III</p>
-                        <h2 class="enf-name">LIMEN</h2>
-                        <p class="enf-sub">The Threshold</p>
-                        <p class="enf-copy">You made it past the door. Everyone beyond this point has verified an SRM email, same as you.</p>
-                        <p class="enf-mono dim">VERIFIED · SRM ONLY</p>
-                    </article>
-                    <article class="enf-plate" data-accent="#5b99b8" data-deep="#0d1920" data-name="CUSTOS" data-matter="NEXT · REPORT · BAN">
-                        <p class="enf-mono">CHAMBER II / III</p>
-                        <h2 class="enf-name">CUSTOS</h2>
-                        <p class="enf-sub">The Watch</p>
-                        <p class="enf-copy">Not vibing? Hit next, nobody takes it personally. Report anyone creepy: people reported by several users get banned. We don't store your chats, but the other person could screenshot, so share carefully.</p>
-                        <p class="enf-mono dim">NEXT · REPORT · BAN</p>
-                    </article>
-                    <article class="enf-plate" data-accent="#a99bd6" data-deep="#141120" data-name="IANUA" data-matter="YOU · NOW">
-                        <p class="enf-mono">CHAMBER III / III</p>
-                        <h2 class="enf-name">IANUA</h2>
-                        <p class="enf-sub">The Last Door</p>
-                        <p class="enf-copy">Pick how you want to meet people, then walk through.</p>
-                        <p class="enf-mono dim">YOU · NOW</p>
-                    </article>
-                </div>
-
-                <footer class="enf-hud">
-                    <span><b class="dim">CHAMBER</b> <span id="hudChamber">I · LIMEN</span></span>
-                    <span class="hud-matter"><b class="dim">MATTER</b> <span id="hudMatter">VERIFIED · SRM ONLY</span></span>
-                    <span><b class="dim">WALK</b> <span id="hudPct">000</span>%</span>
-                    <span id="hudDir">IDLE</span>
-                </footer>
-            </div>
-        </div>
-
-        <!-- The last door: choose and enter -->
+        <!-- Choose how to meet people, then start -->
         <section class="enf-door" id="enfDoor">
-            <p class="enf-mono">CHAMBER III / III — IANUA</p>
+            <p class="lb-hello">Welcome in, <span id="helloName"></span> 👋</p>
             <h2 class="enf-headline small">How do you want<br><em>to meet people?</em></h2>
 
-            <div class="enf-modes" role="radiogroup" aria-label="Chat mode">
+            <p class="lb-step"><span class="lb-num">1</span> Choose how you want to chat <span class="lb-tag req">Required</span></p>
+            <div class="enf-modes" role="radiogroup" aria-label="Choose video chat or text chat">
                 <button class="mode" data-mode="video" role="radio" aria-checked="false">
-                    <span class="enf-mono">I.</span><span class="mode-name">Video</span><span class="enf-mono dim">FACES · VOICES</span>
+                    <span class="mode-radio" aria-hidden="true"></span>
+                    <svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="M15.5 10.2 21 7v10l-5.5-3.2"/></svg>
+                    <span class="mode-name">Video chat</span>
+                    <span class="mode-desc">See and hear each other. Your camera turns on when you start.</span>
                 </button>
                 <button class="mode" data-mode="text" role="radio" aria-checked="false">
-                    <span class="enf-mono">II.</span><span class="mode-name">Text</span><span class="enf-mono dim">WORDS ONLY</span>
+                    <span class="mode-radio" aria-hidden="true"></span>
+                    <svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 3.5V17.5H4A1.5 1.5 0 0 1 2.5 16V7A1.5 1.5 0 0 1 4 5.5Z"/><path d="M7 10h10M7 13.5h6"/></svg>
+                    <span class="mode-name">Text chat</span>
+                    <span class="mode-desc">Just messages. Your camera stays off.</span>
                 </button>
             </div>
 
             <div class="enf-interests">
-                <label for="interestInput" class="enf-mono">WHAT ARE YOU INTO <span class="dim">— UP TO FIVE, OPTIONAL</span></label>
+                <p class="lb-step"><span class="lb-num">2</span> <label for="interestInput">Add your interests</label> <span class="lb-tag">Optional · up to 5</span></p>
+                <p class="lb-sub">We'll try to match you with people who like the same things.</p>
                 <div class="chips-input">
                     <div id="myChips" class="chips"></div>
-                    <input id="interestInput" placeholder="type and press enter" maxlength="20">
+                    <input id="interestInput" placeholder="Type an interest and press Enter" maxlength="20">
                 </div>
                 <div class="suggested" id="suggested"></div>
             </div>
 
             <button id="goBtn" class="enf-enter locked">
-                <span>Walk through</span><i aria-hidden="true">→</i>
+                <span id="goLabel">Choose Video or Text to start</span><i aria-hidden="true">→</i>
             </button>
 
             <footer class="enf-colophon enf-mono">

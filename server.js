@@ -14,7 +14,7 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'srmist.edu.in')
     .split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
 const SESSION_SECRET = process.env.SESSION_SECRET || (IS_PROD ? '' : 'dev-only-secret');
 const SESSION_DAYS = 365;          // renewed on every visit, so people stay logged in until they log out
-const CODE_TTL_MS = 15 * 60 * 1000;       // a login code works (and can be reused) for 15 minutes
+const CODE_TTL_MS = (Number(process.env.CODE_TTL_MINUTES) || 15) * 60 * 1000;       // a login code works (and can be reused) for 15 minutes
 const REPORTS_TO_BAN = Number(process.env.REPORTS_TO_BAN) || 3;
 const BAN_HOURS = Number(process.env.BAN_HOURS) || 24;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -225,6 +225,7 @@ setInterval(() => {
     const now = Date.now();
     for (const [key, times] of hits) if (!times.some(t => now - t < 3600e3)) hits.delete(key);
     for (const [email, entry] of pendingCodes) if (entry.expires < now) pendingCodes.delete(email);
+    for (const [email, times] of mailLog) if (!times.some(t => now - t < 3600e3)) mailLog.delete(email);
 }, 10 * 60 * 1000).unref();
 
 // ---------- EMAIL LOGIN ----------
@@ -297,34 +298,52 @@ async function sendCodeEmail(email, code, minutes = 15) {
     console.log(`\n📧 [dev mode] Login code for ${email}: ${code}\n`);
 }
 
+// Make sure there's a valid code for this email (reuse the current one, or create a fresh one)
+function currentCode(email, { fresh = false } = {}) {
+    let entry = pendingCodes.get(email);
+    const reusable = !fresh && !!entry && entry.expires - Date.now() > 2 * 60e3;
+    if (!reusable) {
+        const code = crypto.randomInt(0, 1e6).toString().padStart(6, '0');
+        entry = { code, hash: hashCode(email, code), expires: Date.now() + CODE_TTL_MS, wrong: 0 };
+        pendingCodes.set(email, entry);
+    }
+    return { entry, reused: reusable };
+}
+
+// Email the code. `force` = the person tapped "Resend code" (always send, except a double-tap within 10s).
+// A cap of 8 emails per address per hour protects the daily email limit; the code still works either way.
+// `brandNew` = a fresh code replaced an expired/locked one, so it must go out (only the hourly cap applies).
+const mailLog = new Map();   // email -> times a code email went out (kept separately so it survives code cleanup)
+async function emailCode(email, entry, { force = false, brandNew = false } = {}) {
+    const now = Date.now();
+    const sent = (mailLog.get(email) || []).filter(t => now - t < 3600e3);
+    const last = sent[sent.length - 1] || 0;
+    const skip = sent.length >= 8 || (!brandNew && (force ? now - last < 10e3 : now - last < 60e3));
+    mailLog.set(email, sent);
+    if (skip) return false;
+    const minutesLeft = Math.max(1, Math.round((entry.expires - now) / 60e3));
+    await sendCodeEmail(email, entry.code, minutesLeft);
+    sent.push(Date.now());
+    return true;
+}
+
+const minutesLeftFor = (entry) => Math.max(1, Math.round((entry.expires - Date.now()) / 60e3));
+
 app.post('/api/request-code', async (req, res) => {
     const email = normalizeEmail(req.body?.email);
     if (!email) return res.status(400).json({ error: `Use your college email (@${ALLOWED_DOMAINS.join(' or @')})` });
     if (isBanned(email)) return res.status(403).json({ error: 'This account is banned.' });
 
-    // Never block a student. Asking again always gives the SAME code while it's valid.
-    // To save the daily email quota we just don't send a duplicate email if one went out
-    // under a minute ago (or 5 already this hour) — their code still works.
-    let entry = pendingCodes.get(email);
-    const reused = !!entry && entry.expires - Date.now() > 2 * 60e3;
-    if (!reused) {
+    // Never block a student. Asking again gives the SAME code while it's valid.
+    const existing = pendingCodes.get(email);
+    if (!existing || existing.expires - Date.now() <= 2 * 60e3) {
         // Brand-new code: only a spam guard (campus Wi-Fi shares one IP, so this is generous)
         if (rateLimited(`ip:${req.ip}`, 300, 3600e3)) return res.status(429).json({ error: 'Too many login attempts from this network. Try again in a few minutes.' });
-        const code = crypto.randomInt(0, 1e6).toString().padStart(6, '0');
-        entry = { code, hash: hashCode(email, code), expires: Date.now() + CODE_TTL_MS, wrong: 0, sentAt: [] };
-        pendingCodes.set(email, entry);
     }
-    const minutesLeft = Math.max(1, Math.round((entry.expires - Date.now()) / 60e3));
-    const now = Date.now();
-    entry.sentAt = (entry.sentAt || []).filter(t => now - t < 3600e3);
-    const sentRecently = entry.sentAt.some(t => now - t < 60e3) || entry.sentAt.length >= 5;
-    if (reused && sentRecently) {
-        return res.json({ ok: true, minutes: minutesLeft, resent: true, emailed: false });
-    }
+    const { entry, reused } = currentCode(email);
     try {
-        await sendCodeEmail(email, entry.code, minutesLeft);
-        entry.sentAt.push(Date.now());
-        res.json({ ok: true, minutes: minutesLeft, resent: reused, emailed: true });
+        const emailed = await emailCode(email, entry, { force: req.body?.resend === true });
+        res.json({ ok: true, minutes: minutesLeftFor(entry), resent: reused, emailed });
     } catch (err) {
         console.error(err);
         if (!reused) pendingCodes.delete(email);
@@ -332,20 +351,35 @@ app.post('/api/request-code', async (req, res) => {
     }
 });
 
-app.post('/api/verify-code', (req, res) => {
+app.post('/api/verify-code', async (req, res) => {
     const email = normalizeEmail(req.body?.email);
     const code = String(req.body?.code || '').trim();
     if (req.body?.agree !== true) return res.status(400).json({ error: 'You need to confirm you are 18+ and accept the Terms & Privacy Policy.' });
+    if (!email) return res.status(400).json({ error: `Use your college email (@${ALLOWED_DOMAINS.join(' or @')})` });
+    if (isBanned(email)) return res.status(403).json({ error: 'This account is banned.' });
+    // Guessing guard: 25 tries per email per hour (5 per code), and a generous per-network cap (campus shares IPs)
+    if (rateLimited(`verify-ip:${req.ip}`, 600, 3600e3) || rateLimited(`verify:${email}`, 25, 3600e3)) {
+        return res.status(429).json({ error: 'Too many tries. Wait a little while, then use the newest code in your email.' });
+    }
 
-    const entry = email && pendingCodes.get(email);
-    if (!entry || entry.expires < Date.now()) return res.status(400).json({ error: 'Code expired. Ask for a new one.' });
+    // Send a brand-new code and tell them, instead of making them ask for one
+    const sendFresh = async (message) => {
+        const { entry } = currentCode(email, { fresh: true });
+        try {
+            const emailed = await emailCode(email, entry, { brandNew: true });
+            return res.status(400).json({ error: emailed ? message : `${message.split(',')[0]}. Too many emails this hour, so try again later.`, newCode: true, minutes: minutesLeftFor(entry) });
+        } catch (err) {
+            console.error(err);
+            return res.status(500).json({ error: "Couldn't send a new code. Tap \"Resend code\" to try again." });
+        }
+    };
+
+    const entry = pendingCodes.get(email);
+    if (!entry || entry.expires < Date.now()) return sendFresh("That code expired, so we've emailed you a new one.");
     const a = Buffer.from(hashCode(email, code)), b = Buffer.from(entry.hash);
     if (!crypto.timingSafeEqual(a, b)) {
         // 5 wrong guesses and the code is thrown away, so nobody can guess their way in
-        if (++entry.wrong >= 5) {
-            pendingCodes.delete(email);
-            return res.status(429).json({ error: 'Too many wrong tries. Ask for a new code.' });
-        }
+        if (++entry.wrong >= 5) return sendFresh("Too many wrong tries, so we've emailed you a new code.");
         return res.status(400).json({ error: 'Wrong code, try again.' });
     }
 
