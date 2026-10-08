@@ -593,25 +593,48 @@ function startPeer(initiator, sameNetwork) {
     peer.on('signal', (data) => socket.emit('signal', { callId, data }));
     peer.on('connect', () => console.info(`Video connected in ${Math.round(performance.now() - started)} ms`));
 
-    peer.on('stream', (stream) => {
+    // Move on by ourselves when a video is dead: never connected, dropped, or
+    // "connected" but black (stream arrives yet no real frames ever decode).
+    let skipped = false;
+    const autoSkip = (why) => {
+        if (skipped || peer !== thisPeer || !isMatched) return;
+        skipped = true;
         clearTimeout(videoTimer);
-        console.info(`Video showing after ${Math.round(performance.now() - started)} ms`);
-        $('remoteVideo').srcObject = stream;
-        $('remotePlaceholder').hidden = true;
-        setStatus('Connected! 🎉');
+        console.info('auto-skip:', why);
+        addSys('No video from them 🙈 finding someone new…', true);
+        startSearch();
+    };
+
+    peer.on('stream', (stream) => {
+        if (peer !== thisPeer) return;
+        const v = $('remoteVideo');
+        v.srcObject = stream;
+        v.play?.().catch(() => { });
+        // Don't announce "Connected" on the stream alone — a blocked media path still
+        // fires this with a black, frozen stream. Only celebrate once frames truly flow.
+        clearTimeout(videoTimer);
+        let lastTime = -1, tries = 0;
+        const checkFrames = () => {
+            if (skipped || peer !== thisPeer || !isMatched) return;
+            const flowing = v.videoWidth > 0 && v.currentTime > 0 && v.currentTime !== lastTime;
+            lastTime = v.currentTime;
+            if (flowing) {
+                console.info(`Video showing after ${Math.round(performance.now() - started)} ms`);
+                $('remotePlaceholder').hidden = true;
+                setStatus('Connected! 🎉');
+                return;
+            }
+            if (++tries >= 4) return autoSkip('connected but no video frames (black screen)');
+            videoTimer = setTimeout(checkFrames, 2000);
+        };
+        videoTimer = setTimeout(checkFrames, 2500);
     });
 
-    peer.on('error', (err) => {
-        console.warn(err);
-        if (peer === thisPeer && isMatched) addSys('Video connection dropped 😕 You can keep texting or hit Next.');
-    });
+    peer.on('error', (err) => { console.warn(err); autoSkip('peer error'); });
+    peer.on('close', () => autoSkip('peer closed'));
 
-    videoTimer = setTimeout(() => {
-        if (peer === thisPeer && isMatched) {
-            setStatus('Text chat only 💬');
-            addSys("Video couldn't connect (the network might be blocking it). You can still text, or hit Next.");
-        }
-    }, 20000);
+    // Nothing ever came through → give up and move on
+    videoTimer = setTimeout(() => autoSkip('no video within 15s'), 15000);
 }
 
 function endPeer() {
