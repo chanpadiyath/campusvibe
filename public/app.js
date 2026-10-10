@@ -552,6 +552,7 @@ function startSearch() {
     $('typing').hidden = true;
     setStatus('Rolling the dice… 🎲', true);
     if (!$('messages').children.length) addSys('Looking for someone…');
+    if (!socket) connectSocket();      // socket dropped (e.g. brief network blip): reconnect; io() buffers this join until it's back
     socket.emit('join', { mode, interests });
 }
 
@@ -595,6 +596,8 @@ function startPeer(initiator, sameNetwork) {
 
     // Move on by ourselves when a video is dead: never connected, dropped, or
     // "connected" but black (stream arrives yet no real frames ever decode).
+    // Move on by ourselves when a video is dead: never connected, dropped, or
+    // "connected" but black (the stream arrives yet no real frames ever decode).
     let skipped = false;
     const autoSkip = (why) => {
         if (skipped || peer !== thisPeer || !isMatched) return;
@@ -610,31 +613,32 @@ function startPeer(initiator, sameNetwork) {
         const v = $('remoteVideo');
         v.srcObject = stream;
         v.play?.().catch(() => { });
-        // Don't announce "Connected" on the stream alone — a blocked media path still
-        // fires this with a black, frozen stream. Only celebrate once frames truly flow.
-        clearTimeout(videoTimer);
-        let lastTime = -1, tries = 0;
-        const checkFrames = () => {
-            if (skipped || peer !== thisPeer || !isMatched) return;
-            const flowing = v.videoWidth > 0 && v.currentTime > 0 && v.currentTime !== lastTime;
-            lastTime = v.currentTime;
-            if (flowing) {
-                console.info(`Video showing after ${Math.round(performance.now() - started)} ms`);
-                $('remotePlaceholder').hidden = true;
-                setStatus('Connected! 🎉');
-                return;
-            }
-            if (++tries >= 4) return autoSkip('connected but no video frames (black screen)');
-            videoTimer = setTimeout(checkFrames, 2000);
-        };
-        videoTimer = setTimeout(checkFrames, 2500);
     });
 
     peer.on('error', (err) => { console.warn(err); autoSkip('peer error'); });
     peer.on('close', () => autoSkip('peer closed'));
 
-    // Nothing ever came through → give up and move on
-    videoTimer = setTimeout(() => autoSkip('no video within 15s'), 15000);
+    // One health loop: say "Connected" the moment real frames actually decode (not just when
+    // the stream object arrives — a blocked path still fires that with a black, frozen image).
+    // If nothing is showing by the deadline, treat it as dead and move on. The window is
+    // generous so a slow-but-working link is never skipped by mistake.
+    let lastTime = -1;
+    const deadline = performance.now() + 18000;
+    const checkHealth = () => {
+        if (skipped || peer !== thisPeer || !isMatched) return;
+        const v = $('remoteVideo');
+        const flowing = v.videoWidth > 0 && v.currentTime > 0 && v.currentTime !== lastTime;
+        lastTime = v.currentTime;
+        if (flowing) {
+            console.info(`Video showing after ${Math.round(performance.now() - started)} ms`);
+            $('remotePlaceholder').hidden = true;
+            setStatus('Connected! 🎉');
+            return;   // healthy — stop watching (a later drop is caught by 'close' / 'error')
+        }
+        if (performance.now() > deadline) return autoSkip('no video (dead or black screen)');
+        videoTimer = setTimeout(checkHealth, 1500);
+    };
+    videoTimer = setTimeout(checkHealth, 1500);
 }
 
 function endPeer() {
