@@ -540,6 +540,7 @@ const METERED_DOMAIN = (process.env.METERED_DOMAIN || '').trim().replace(/^https
 const METERED_API_KEY = (process.env.METERED_API_KEY || '').trim();
 const TURN_TTL_S = 24 * 3600;
 let turnCache = null;   // { iceServers, expires }
+let turnRetryAt = 0;    // after a failed fetch, wait a minute before asking the provider again
 
 // Browsers time out on port 53 TURN URLs, so drop them (Cloudflare's own advice)
 const dropPort53 = (servers) => servers
@@ -578,12 +579,14 @@ async function fetchTurnServers() {
 // Fresh credentials are shared by everyone and renewed well before they expire
 async function getTurnServers() {
     if (turnCache && Date.now() < turnCache.expires) return turnCache.iceServers;
+    if (Date.now() < turnRetryAt) return turnCache?.iceServers || null;
     try {
         const iceServers = await fetchTurnServers();
         turnCache = iceServers && { iceServers, expires: Date.now() + TURN_TTL_S * 1000 / 2 };
         return iceServers;
     } catch (err) {
         console.error('Could not get TURN credentials:', err.message);
+        turnRetryAt = Date.now() + 60e3;
         return turnCache?.iceServers || null;   // keep using the last working ones if the provider hiccups
     }
 }
@@ -812,9 +815,10 @@ server.listen(PORT, '0.0.0.0', () => {
     else if (gmail) console.log(`Login codes are emailed from ${GMAIL_USER}`);
     else if (process.env.RESEND_API_KEY) console.log('Login codes are emailed through Resend');
     else console.log('No email sender set up: login codes will be printed here instead of emailed.');
-    console.log(turnConfigured
-        ? 'Video: TURN relay is set up, calls work across different networks'
-        : '⚠️  Video: no TURN relay set up. Calls between different networks (mobile data, campus Wi-Fi) will show a black screen. See README.');
+    if (!turnConfigured) console.log('⚠️  Video: no TURN relay set up. Calls between different networks (mobile data, campus Wi-Fi) will show a black screen. See README.');
+    else getTurnServers().then(t => console.log(t?.length
+        ? 'Video: TURN relay is ready, calls work across different networks'
+        : '⚠️  Video: TURN relay is set up but its credentials did not work (see error above). Calls between different networks will fail.'));
 });
 
 // Minimal .env reader so you don't need an extra package.
