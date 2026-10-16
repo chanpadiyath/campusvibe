@@ -70,6 +70,7 @@ let interests = [];
 let localStream = null;
 let peer = null;
 let iceServers = null;
+let iceFetchedAt = 0;        // TURN credentials expire, so fetch fresh ones every few hours
 let relayOnly = false;       // true when the server has a TURN relay: video never goes direct, so IPs stay hidden
 let isMatched = false;
 let videoTimer = null;
@@ -427,10 +428,11 @@ $('goBtn').addEventListener('click', async () => {
             toast("Couldn't get your camera 📷 so we switched to text mode");
         }
         if (ok) startNudityFilter();
-        if (!iceServers) {
+        if (!iceServers || Date.now() - iceFetchedAt > 4 * 3600e3) {
             const { ok: iceOk, data } = await api('/api/ice');
             iceServers = iceOk ? data.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }];
             relayOnly = iceOk && data.relayOnly === true;
+            iceFetchedAt = iceOk ? Date.now() : 0;
         }
     }
     document.body.classList.toggle('text-mode', mode === 'text');

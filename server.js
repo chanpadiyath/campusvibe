@@ -528,21 +528,73 @@ app.post('/api/logout', (req, res) => {
     res.json({ ok: true });
 });
 
-// STUN finds your public address; TURN relays video when campus Wi-Fi blocks direct connections.
-app.get('/api/ice', requireAuth, (req, res) => {
-    // With a TURN server, video goes through the relay only, so users never see each other's IP address.
-    if (process.env.TURN_URLS) {
-        return res.json({
-            relayOnly: true,
-            iceServers: [{
-                urls: process.env.TURN_URLS.split(',').map(u => u.trim()),
-                username: process.env.TURN_USERNAME,
-                credential: process.env.TURN_CREDENTIAL,
-            }],
+// STUN finds your public address; TURN relays video when campus Wi-Fi / mobile data blocks direct connections.
+// Three ways to get a TURN relay (first one configured wins):
+//   1. Cloudflare TURN:  CLOUDFLARE_TURN_KEY_ID + CLOUDFLARE_TURN_API_TOKEN  (fresh credentials made automatically)
+//   2. Metered TURN:     METERED_DOMAIN (e.g. yourapp.metered.live) + METERED_API_KEY (fresh credentials made automatically)
+//   3. Any TURN server:  TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL (fixed credentials)
+const STUN = { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] };
+const CF_TURN_KEY_ID = (process.env.CLOUDFLARE_TURN_KEY_ID || '').trim();
+const CF_TURN_API_TOKEN = (process.env.CLOUDFLARE_TURN_API_TOKEN || '').trim();
+const METERED_DOMAIN = (process.env.METERED_DOMAIN || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+const METERED_API_KEY = (process.env.METERED_API_KEY || '').trim();
+const TURN_TTL_S = 24 * 3600;
+let turnCache = null;   // { iceServers, expires }
+
+// Browsers time out on port 53 TURN URLs, so drop them (Cloudflare's own advice)
+const dropPort53 = (servers) => servers
+    .map(s => ({ ...s, urls: [].concat(s.urls).filter(u => !/:53(\?|$)/.test(u)) }))
+    .filter(s => s.urls.length);
+
+async function fetchTurnServers() {
+    if (CF_TURN_KEY_ID && CF_TURN_API_TOKEN) {
+        const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${CF_TURN_KEY_ID}/credentials/generate-ice-servers`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${CF_TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ttl: TURN_TTL_S }),
+            signal: AbortSignal.timeout(5000),
         });
+        if (!r.ok) throw new Error(`Cloudflare TURN ${r.status}: ${await r.text()}`);
+        const { iceServers } = await r.json();
+        return dropPort53([].concat(iceServers));
     }
-    // Without TURN (local testing), browsers connect directly and can see each other's IP address.
-    res.json({ relayOnly: false, iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    if (METERED_DOMAIN && METERED_API_KEY) {
+        const r = await fetch(`https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_API_KEY)}`, {
+            signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) throw new Error(`Metered TURN ${r.status}: ${await r.text()}`);
+        return dropPort53(await r.json());
+    }
+    if (process.env.TURN_URLS) {
+        return [{
+            urls: process.env.TURN_URLS.split(',').map(u => u.trim()).filter(Boolean),
+            username: (process.env.TURN_USERNAME || '').trim(),
+            credential: (process.env.TURN_CREDENTIAL || '').trim(),
+        }];
+    }
+    return null;
+}
+
+// Fresh credentials are shared by everyone and renewed well before they expire
+async function getTurnServers() {
+    if (turnCache && Date.now() < turnCache.expires) return turnCache.iceServers;
+    try {
+        const iceServers = await fetchTurnServers();
+        turnCache = iceServers && { iceServers, expires: Date.now() + TURN_TTL_S * 1000 / 2 };
+        return iceServers;
+    } catch (err) {
+        console.error('Could not get TURN credentials:', err.message);
+        return turnCache?.iceServers || null;   // keep using the last working ones if the provider hiccups
+    }
+}
+const turnConfigured = !!((CF_TURN_KEY_ID && CF_TURN_API_TOKEN) || (METERED_DOMAIN && METERED_API_KEY) || process.env.TURN_URLS);
+
+app.get('/api/ice', requireAuth, async (req, res) => {
+    const turn = await getTurnServers();
+    // With a TURN server, video goes through the relay only, so users never see each other's IP address.
+    if (turn?.length) return res.json({ relayOnly: true, iceServers: [STUN, ...turn] });
+    // Without TURN, browsers on different networks (mobile data, campus Wi-Fi) often can't connect at all: black screen.
+    res.json({ relayOnly: false, iceServers: [STUN] });
 });
 
 // ---------- MATCHMAKING ----------
@@ -760,6 +812,9 @@ server.listen(PORT, '0.0.0.0', () => {
     else if (gmail) console.log(`Login codes are emailed from ${GMAIL_USER}`);
     else if (process.env.RESEND_API_KEY) console.log('Login codes are emailed through Resend');
     else console.log('No email sender set up: login codes will be printed here instead of emailed.');
+    console.log(turnConfigured
+        ? 'Video: TURN relay is set up, calls work across different networks'
+        : '⚠️  Video: no TURN relay set up. Calls between different networks (mobile data, campus Wi-Fi) will show a black screen. See README.');
 });
 
 // Minimal .env reader so you don't need an extra package.
