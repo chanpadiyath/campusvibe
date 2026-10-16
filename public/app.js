@@ -476,6 +476,7 @@ function connectSocket() {
 
     socket.on('matched', ({ initiator, shared, sameNetwork, callId }) => {
         currentCallId = callId;
+        lastStrangerChatAt = 0;
         clearTimeout(researchTimer);
         isMatched = true;
         $('messages').replaceChildren();
@@ -488,6 +489,7 @@ function connectSocket() {
             setStatus('Chatting with a stranger 💬');
         } else {
             setStatus('Connecting video… 📡', true);
+            setRemotePlaceholder('Connecting video…');
             startPeer(initiator, sameNetwork);
         }
     });
@@ -496,11 +498,15 @@ function connectSocket() {
     socket.on('signal', (msg) => { if (msg?.callId === currentCallId && peer) peer.signal(msg.data); });
 
     socket.on('chat_message', (text) => {
+        lastStrangerChatAt = Date.now();
         $('typing').hidden = true;
         addMsg(text, 'stranger');
     });
 
-    socket.on('typing', (on) => ($('typing').hidden = !on));
+    socket.on('typing', (on) => {
+        if (on) lastStrangerChatAt = Date.now();
+        $('typing').hidden = !on;
+    });
     socket.on('system', (text) => addSys(text));
 
     socket.on('partner_left', () => {
@@ -569,6 +575,7 @@ function goHome() {
 
 // ---------- Video (WebRTC) ----------
 let currentCallId = null;
+let lastStrangerChatAt = 0;   // last time the stranger typed or sent a message (counts as "still here")
 
 function startPeer(initiator, sameNetwork) {
     const started = performance.now();
@@ -588,21 +595,35 @@ function startPeer(initiator, sameNetwork) {
     const callId = currentCallId;
 
     peer.on('signal', (data) => socket.emit('signal', { callId, data }));
-    peer.on('connect', () => console.info(`Video connected in ${Math.round(performance.now() - started)} ms`));
+    let connected = false;
+    peer.on('connect', () => {
+        connected = true;
+        if (peer === thisPeer && isMatched) {
+            setStatus('Connected! 🎉');
+            setRemotePlaceholder('No picture from them right now');   // hidden as soon as their video shows
+        }
+        console.info(`Video connected in ${Math.round(performance.now() - started)} ms`);
+    });
 
-    // Move on by ourselves when a video is dead: never connected, dropped, or
-    // "connected" but black (stream arrives yet no real frames ever decode).
-    // Move on by ourselves when a video is dead: never connected, dropped, or
-    // "connected" but black (the stream arrives yet no real frames ever decode).
+    // Auto-skip ONLY in two cases, so nobody is left stranded with a dead call:
+    //   1. The call never connects (or the connection fails / drops for good).
+    //   2. It's connected but dead: their video is black AND they're silent AND they haven't
+    //      typed anything, all at the same time for DEAD_MS in a row.
+    // A dark room with someone talking, or a camera-off person who's chatting, never gets skipped.
     let skipped = false;
-    const autoSkip = (why) => {
+    const autoSkip = (why, text) => {
         if (skipped || peer !== thisPeer || !isMatched) return;
         skipped = true;
         clearTimeout(videoTimer);
         console.info('auto-skip:', why);
-        addSys('No video from them 🙈 finding someone new…', true);
+        addSys(text, true);
         startSearch();
     };
+    // Wait a moment first: when they hit Next, their side closes a split second before the
+    // server's "partner_left" arrives, and that message (not "connection dropped") should win.
+    const lostConnection = () => setTimeout(() => autoSkip('connection failed', connected
+        ? 'The connection to them dropped 📡 finding someone new…'
+        : "Couldn't connect to them 📡 finding someone new…"), 2500);
 
     peer.on('stream', (stream) => {
         if (peer !== thisPeer) return;
@@ -611,30 +632,82 @@ function startPeer(initiator, sameNetwork) {
         v.play?.().catch(() => { });
     });
 
-    peer.on('error', (err) => { console.warn(err); autoSkip('peer error'); });
-    peer.on('close', () => autoSkip('peer closed'));
+    peer.on('error', (err) => { console.warn(err); lostConnection(); });
+    peer.on('close', lostConnection);
 
-    // One health loop: say "Connected" the moment real frames actually decode (not just when
-    // the stream object arrives — a blocked path still fires that with a black, frozen image).
-    // If nothing is showing by the deadline, treat it as dead and move on. The window is
-    // generous so a slow-but-working link is never skipped by mistake.
-    let lastTime = -1;
-    const deadline = performance.now() + 18000;
-    const checkHealth = () => {
-        if (skipped || peer !== thisPeer || !isMatched) return;
-        const v = $('remoteVideo');
-        const flowing = v.videoWidth > 0 && v.currentTime > 0 && v.currentTime !== lastTime;
+    // One health loop, every 2 s:
+    //  - say "Connected" the moment real frames decode (a blocked path can deliver a black, frozen stream)
+    //  - case 1: not connected after CONNECT_MS → skip
+    //  - case 2: black + silent + no chat for DEAD_MS → skip
+    const CONNECT_MS = 20000, DEAD_MS = 20000;
+    const sampler = document.createElement('canvas');
+    sampler.width = 32; sampler.height = 24;
+    const sctx = sampler.getContext('2d', { willReadFrequently: true });
+    let lastTime = -1, showing = false, deadSince = null, audio = null;
+
+    // Is their picture black (no new frames, or almost no light at all)?
+    const isBlack = (v) => {
+        const fresh = v.videoWidth > 0 && v.currentTime > 0 && v.currentTime !== lastTime;
         lastTime = v.currentTime;
-        if (flowing) {
-            console.info(`Video showing after ${Math.round(performance.now() - started)} ms`);
+        if (!fresh) return true;
+        try {
+            sctx.drawImage(v, 0, 0, 32, 24);
+            const px = sctx.getImageData(0, 0, 32, 24).data;
+            let sum = 0;
+            for (let i = 0; i < px.length; i += 4) sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+            return sum / (px.length / 4) < 6;    // mean brightness out of 255; a dim room is well above this
+        } catch { return false; }                // can't tell → assume it's fine
+    };
+
+    // Have they made any sound since the last check? Unknown → assume yes (never skip on a guess).
+    // Browsers only measure loudness while the sound is actually playing, so if playback is muted
+    // or blocked (e.g. autoplay rules) we can't tell, and treat it as sound.
+    const madeSound = async () => {
+        const v = $('remoteVideo');
+        if (v.muted || v.paused || v.volume === 0) return true;
+        try {
+            const stats = await thisPeer._pc.getStats();
+            let rtp = null;
+            stats.forEach(r => { if (r.type === 'inbound-rtp' && r.kind === 'audio') rtp = r; });
+            if (!rtp) return !connected;          // no audio stream at all yet
+            if (rtp.totalAudioEnergy !== undefined && rtp.totalSamplesDuration !== undefined) {
+                const prev = audio;
+                audio = { e: rtp.totalAudioEnergy, d: rtp.totalSamplesDuration };
+                if (!prev || audio.d <= prev.d) return true;   // no new audio measured → can't tell
+                return Math.sqrt((audio.e - prev.e) / (audio.d - prev.d)) > 0.01;   // average loudness (0–1)
+            }
+            return rtp.audioLevel === undefined || rtp.audioLevel > 0.01;
+        } catch { return true; }
+    };
+
+    const checkHealth = async () => {
+        if (skipped || peer !== thisPeer || !isMatched) return;
+        const now = performance.now();
+        if (!connected && now - started > CONNECT_MS) return autoSkip('never connected', "Couldn't connect to them 📡 finding someone new…");
+
+        const v = $('remoteVideo');
+        const black = isBlack(v);
+        if (!black && !showing) {
+            showing = true;
+            console.info(`Video showing after ${Math.round(now - started)} ms`);
             $('remotePlaceholder').hidden = true;
             setStatus('Connected! 🎉');
-            return;   // healthy — stop watching (a later drop is caught by 'close' / 'error')
         }
-        if (performance.now() > deadline) return autoSkip('no video (dead or black screen)');
-        videoTimer = setTimeout(checkHealth, 1500);
+
+        if (connected) {
+            const sound = await madeSound();
+            if (skipped || peer !== thisPeer || !isMatched) return;
+            const chatted = Date.now() - lastStrangerChatAt < DEAD_MS;
+            if (black && !sound && !chatted) {
+                deadSince ??= now;
+                if (now - deadSince > DEAD_MS) return autoSkip('black + silent', 'No video, no sound and no messages from them 🙈 finding someone new…');
+            } else {
+                deadSince = null;
+            }
+        }
+        videoTimer = setTimeout(checkHealth, 2000);
     };
-    videoTimer = setTimeout(checkHealth, 1500);
+    videoTimer = setTimeout(checkHealth, 2000);
 }
 
 function endPeer() {
@@ -642,6 +715,11 @@ function endPeer() {
     if (peer) { peer.destroy(); peer = null; }
     $('remoteVideo').srcObject = null;
     $('remotePlaceholder').hidden = false;
+    setRemotePlaceholder('Finding someone from campus…');
+}
+
+function setRemotePlaceholder(text) {
+    $('remotePlaceholderText').textContent = text;
 }
 
 // ---------- Chat input ----------
