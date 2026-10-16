@@ -64,10 +64,6 @@ app.use((req, res, next) => {
 // Tiny wake/keep-alive ping for uptime monitors (UptimeRobot etc.) — stops Render's free plan sleeping
 app.get('/healthz', (req, res) => res.type('text').send('ok'));
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
-// Nudity filter libraries, served from our own server (runs entirely in the browser; video never leaves the device for this)
-app.get('/vendor/nsfwjs.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/browser/nsfwjs.min.js'), { maxAge: '30d' }));
-app.get('/vendor/nsfw-model/model.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/models/mobilenet_v2/model.min.js'), { maxAge: '30d' }));
-app.get('/vendor/nsfw-model/weights.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/nsfwjs/dist/models/mobilenet_v2/group1-shard1of1.min.js'), { maxAge: '30d' }));
 
 // ---------- MODERATION STORE (bans + reports, saved to disk) ----------
 const DB_FILE = path.join(DATA_DIR, 'moderation.json');

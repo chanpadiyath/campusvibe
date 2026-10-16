@@ -371,8 +371,6 @@ function renderMode() {
 document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => {
     mode = b.dataset.mode;
     renderMode();
-    // Picking Video starts loading the nudity filter in the background, so it's ready before the call
-    if (mode === 'video') window.NsfwGuard?.preload();
 }));
 
 
@@ -427,7 +425,6 @@ $('goBtn').addEventListener('click', async () => {
             renderMode();
             toast("Couldn't get your camera 📷 so we switched to text mode");
         }
-        if (ok) startNudityFilter();
         if (!iceServers || Date.now() - iceFetchedAt > 4 * 3600e3) {
             const { ok: iceOk, data } = await api('/api/ice');
             iceServers = iceOk ? data.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -481,8 +478,6 @@ function connectSocket() {
         currentCallId = callId;
         clearTimeout(researchTimer);
         isMatched = true;
-        window.NsfwGuard?.newMatch();
-        clearNudityCover();
         $('messages').replaceChildren();
         addSys('You matched with someone who has a verified SRM email. Be kind, and never share your number, address or passwords.');
         if (shared.length) addSys(`You both like: ${shared.map(s => `${EMOJI[s] || '✨'} ${s}`).join(', ')}`, true);
@@ -569,7 +564,6 @@ function goHome() {
     isMatched = false;
     endPeer();
     stopCamera();
-    window.NsfwGuard?.stop();
     show('lobby', { atDoor: true });
 }
 
@@ -648,48 +642,7 @@ function endPeer() {
     if (peer) { peer.destroy(); peer = null; }
     $('remoteVideo').srcObject = null;
     $('remotePlaceholder').hidden = false;
-    clearNudityCover();
 }
-
-// ---------- Nudity filter (runs on this device only) ----------
-function startNudityFilter() {
-    window.NsfwGuard?.start({
-        remoteVideo: () => $('remoteVideo'),
-        localVideo: () => $('localVideo'),
-        // Their video looked like nudity: hide it for the rest of this chat
-        onRemoteBlocked: () => {
-            if (!isMatched) return;
-            $('remoteWrap').classList.add('nsfw-blocked');
-            $('nsfwCover').hidden = false;
-            addSys('Their video was hidden because it may contain nudity. You can report them or hit Next.');
-        },
-        // My own camera looked like nudity: switch it off before anything more is sent
-        onLocalBlocked: () => {
-            const track = localStream?.getVideoTracks()[0];
-            if (!track || !track.enabled) return;
-            track.enabled = false;
-            $('camBtn').classList.add('off');
-            $('camBtn').textContent = 'CAM OFF';
-            toast('Your camera was turned off because it may be showing nudity');
-            addSys('Your camera was turned off because it may be showing nudity. Turn it back on with CAM when you are ready.');
-        },
-    });
-}
-
-function clearNudityCover() {
-    $('remoteWrap').classList.remove('nsfw-blocked');
-    $('nsfwCover').hidden = true;
-}
-
-$('nsfwNext').addEventListener('click', () => nextPerson());
-$('nsfwReport').addEventListener('click', () => {
-    if (!isMatched) return;
-    socket.emit('report', { reason: 'nudity', note: 'Video hidden by the nudity filter' });
-    isMatched = false;
-    toast('Reported. Thanks for keeping it safe 🙏');
-    $('messages').replaceChildren();
-    startSearch();
-});
 
 // ---------- Chat input ----------
 $('msgForm').addEventListener('submit', (e) => {

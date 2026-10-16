@@ -678,16 +678,3 @@ body[data-screen="lobby"] .toast {
 }
 body[data-screen="lobby"] .warning-dialog, body[data-screen="lobby"] .warning-dialog h2 { font-family: 'Bodoni Moda', serif; }
 body[data-screen="lobby"] dialog.card { background: #13110f; color: #e8e1d3; border: 1px solid rgba(232, 225, 211, 0.25); border-radius: 0; }
-
-/* Nudity filter: blur the stranger's video and cover it */
-.remote-wrap.nsfw-blocked #remoteVideo { filter: blur(48px) brightness(0.5); transform: scale(1.15); }
-.nsfw-cover {
-    position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
-    padding: 20px; text-align: center; color: #e8e1d3; background: rgba(7, 6, 5, 0.85);
-    font-family: 'Bodoni Moda', serif; font-size: 1.2rem;
-}
-.nsfw-cover[hidden] { display: none; }
-.nsfw-cover b { font-size: 1.6rem; font-weight: 400; font-style: italic; }
-.nsfw-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-.nsfw-cover .ctrl { color: #e8e1d3; border-color: rgba(232, 225, 211, 0.5); }
-.nsfw-cover .ctrl.next { background: #e8e1d3; color: #0b0a09; }
